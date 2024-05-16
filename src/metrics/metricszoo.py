@@ -343,12 +343,12 @@ class Fid(BaseMetric):
     def __init__(self):
         self.scores = []
         self.answers = []
-        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-        self.inception = InceptionV3([block_idx], normalize_input=False).cuda()
     
     @torch.no_grad()
     def _calculate_activation_statistics(self, images, batch_size=128, dims=2048, cuda=False):
-        self.inception.eval()
+        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+        inception = InceptionV3([block_idx], normalize_input=False).cuda()
+        inception.eval()
 
         # repeat channels for gray images
         if images.size(1) == 1:
@@ -360,7 +360,7 @@ class Fid(BaseMetric):
                 batch = image.cuda()
             else:
                 batch = image
-            pred = self.inception(batch)[0]
+            pred = inception(batch)[0]
 
             # If model output is not scalar, apply global spatial average pooling.
             # This happens if you choose a dimensionality not equal 2048.

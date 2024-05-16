@@ -33,17 +33,6 @@ class FedavgServer(BaseServer):
         self.clients = self._create_clients(client_datasets) # clients container
         self.results = defaultdict(dict) # logging results container
 
-        # online learning configs
-        ## reward containers
-        self.cum_server_obj = torch.zeros(1)
-        self.cum_global_obj = torch.zeros(1)
-        
-        ## online decision making of the server
-        self.mix_coefs = torch.ones(self.args.K).mul(self.args.C) # mixing coefficients for each client
-
-        ## measure kl divergence
-        self.kl_div = lambda p, q: torch.nan_to_num((p.log().sub(q.log()).exp().sub(1)).sub(p.log().sub(q.log())), posinf=0, neginf=0)
-
     def _init_model(self, model):
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Initialize a model!')
         init_weights(model, self.args.init_type, self.args.init_gain)
@@ -310,8 +299,6 @@ class FedavgServer(BaseServer):
         return selected_ids
 
     def evaluate(self, exclude_ids):
-        """Evaluate the global model located at the server.
-        """
         """Evaluate the global model located at the server.
         """
         ##############

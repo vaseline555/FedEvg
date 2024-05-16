@@ -221,10 +221,25 @@ class FlganServer(FedavgServer):
             server_log_string += f'| {metric}: {value:.4f} '
         logger.info(server_log_string)
 
+        # generated images
+        gen_imgs = generated.mul(0.5).add(0.5).detach().cpu().numpy()
+        viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+        to_viz = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        to_viz = np.transpose(to_viz, (1, 2, 0))
+        self.writer.add_image(
+            'Server Generated Image', 
+            to_viz, 
+            self.round // self.args.eval_every,
+            dataformats='HWC'
+        )
+        viz_opt = 'L' if to_viz.shape[-1] == 1 else 'RGB'
+        img = Image.fromarray(to_viz.squeeze(), viz_opt)
+        img.save(f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.png')
+
         # log TensorBoard
-        self.writer.add_scalar('Server Loss', loss, self.round)
+        self.writer.add_scalar('Server Loss', loss, self.round // self.args.eval_every)
         for name, value in result['metrics'].items():
-            self.writer.add_scalar(f'Server {name.title()}', value, self.round)
+            self.writer.add_scalar(f'Server {name.title()}', value, self.round // self.args.eval_every)
         else:
             self.writer.flush()
         self.results[self.round]['server_evaluated'] = result

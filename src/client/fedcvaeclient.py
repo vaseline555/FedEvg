@@ -1,6 +1,8 @@
 import torch
 import logging
 
+from collections import Counter
+
 from .fedavgclient import FedavgClient
 from src import MetricManager
 
@@ -12,20 +14,32 @@ logger = logging.getLogger(__name__)
 class FedcvaeClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedcvaeClient, self).__init__(**kwargs)
-        self.gan_criterion = torch.nn.BCELoss()
+    
+    def compute_local_label_dist(self):
+        targets = torch.tensor([
+            self.training_set[i][1] for i in range(len(self.training_set))
+        ]).long()
         
+        count = Counter(targets.numpy())
+        count_dict = dict()
+        for label in range(self.args.num_classes):
+            try:
+                count_dict[label] = count[label]
+            except:
+                count_dict[label] = 0
+        emp_pmf = torch.tensor([
+            count_dict[l] / sum(count_dict.values()) for l in range(self.args.num_classes)
+        ])
+        return emp_pmf.cpu()
+
     @torch.enable_grad()
     def update(self):
         mm = MetricManager(self.args.eval_metrics)
         self.model.train()
         self.model.to(self.args.device)
 
-        D_optimizer = self.optim(
-            list(param for param in self.model.discriminator.parameters() if param.requires_grad), 
-            **self._refine_optim_args(self.args)
-        )
-        G_optimizer = self.optim(
-            list(param for param in self.model.generator.parameters() if param.requires_grad), 
+        optimizer = self.optim(
+            list(param for param in self.model.parameters() if param.requires_grad), 
             **self._refine_optim_args(self.args)
         )
 
@@ -34,69 +48,38 @@ class FedcvaeClient(FedavgClient):
                 # real image and label
                 inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
 
-                # fake image and label
-                fake_label = torch.randint(self.args.num_classes, (inputs.size(0),)).long().to(self.args.device)
-                noise = torch.randn(inputs.size(0), self.args.hidden_size * 2, 1, 1).to(self.args.device)
-                noise = torch.cat([
-                    noise, 
-                    torch.eye(self.args.num_classes).to(self.args.device)[
-                        targets
-                    ].view(-1, self.args.num_classes, 1, 1)
-                ], dim=1)
-
-                # update D
-                disc_fake, disc_real, clf_fake, clf_real = self.model(noise, inputs, for_D=True)
+                # one-hot encode label
+                targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
+                    targets
+                ].view(-1, self.args.num_classes)
                 
-                ## D on real
-                D_loss_real = self.gan_criterion(disc_real, torch.ones_like(disc_real))
-                clf_loss_real = self.criterion(clf_real, targets)
+                # inference
+                generated, mu, std = self.model(inputs, targets_hot)
 
-                ## D on fake
-                D_loss_fake = self.gan_criterion(disc_fake, torch.zeros_like(disc_fake))
-                clf_loss_fake = self.criterion(clf_fake, torch.ones_like(targets).mul(fake_label).long())
+                # Calculate losses
+                recon_loss = self.criterion(generated, inputs)
+                kld_loss = -0.5 * (1 + std.pow(2).log() - mu.pow(2) - std.pow(2)).sum(1).mean()
+                loss = recon_loss + kld_loss
 
-                ## total loss of D
-                D_loss = D_loss_real + D_loss_fake + clf_loss_real + clf_loss_fake
-
-                # backward D
-                D_optimizer.zero_grad()
-                D_loss.backward()
+                # backward
+                optimizer.zero_grad()
+                loss.backward()
                 if self.args.max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(
-                        list(param for param in self.model.generator.parameters() if param.requires_grad), 
+                        list(param for param in self.model.parameters() if param.requires_grad), 
                         self.args.max_grad_norm
                     )
-                D_optimizer.step()
-
-                # update G
-                disc_fake, clf_fake, generated = self.model(noise, inputs, for_D=False)
-
-                ## D on fake
-                G_loss_fake = self.gan_criterion(disc_fake, torch.ones_like(disc_fake))
-                clf_loss_fake = self.criterion(clf_fake, targets)
-
-                ## total loss of D
-                G_loss = G_loss_fake + clf_loss_fake
-
-                # backward D
-                G_optimizer.zero_grad()
-                G_loss.backward()
-                if self.args.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        list(param for param in self.model.generator.parameters() if param.requires_grad), 
-                        self.args.max_grad_norm
-                    )
-                G_optimizer.step()
+                optimizer.step()
 
                 # collect clf results
                 mm.track(
-                    loss=[(D_loss_real + D_loss_fake).detach().cpu(), G_loss_fake.detach().cpu()], 
+                    loss=[recon_loss.detach().cpu(), kld_loss.detach().cpu()], 
                     pred=generated.detach().cpu(),
                     true=inputs.detach().cpu(), 
-                    suffix=['D', 'G'],
-                    calc_fid=False
+                    suffix=['recon', 'kl'],
+                    calc_fid=False,
+                    denormalize=False
                 )
-                mm.track(clf_loss_real.detach().cpu(), clf_real.detach().cpu(), targets)
             else:
                 mm.aggregate(len(self.training_set), e + 1)
         else:
@@ -116,49 +99,28 @@ class FedcvaeClient(FedavgClient):
             # real image and label
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
 
-            # fake image and label
-            fake_label = torch.randint(self.args.num_classes, (inputs.size(0),)).long().to(self.args.device)
-            noise = torch.randn(inputs.size(0), self.args.hidden_size * 2, 1, 1).to(self.args.device)
-            noise = torch.cat([
-                noise, 
-                torch.eye(self.args.num_classes).to(self.args.device)[
-                    targets
-                ].view(-1, self.args.num_classes, 1, 1)
-            ], dim=1)
-
-            # D
-            disc_fake, disc_real, clf_fake, clf_real = self.model(noise, inputs, for_D=True)
+            # one-hot encode label
+            targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
+                targets
+            ].view(-1, self.args.num_classes)
             
-            ## D on real
-            D_loss_real = self.gan_criterion(disc_real, torch.ones_like(disc_real))
-            clf_loss_real = self.criterion(clf_real, targets)
+            # inference
+            generated, mu, std = self.model(inputs, targets_hot)
 
-            ## D on fake
-            D_loss_fake = self.gan_criterion(disc_fake, torch.zeros_like(disc_fake))
-            clf_loss_fake = self.criterion(clf_fake, torch.ones_like(targets).mul(fake_label).long())
+            # Calculate losses
+            recon_loss = self.criterion(generated, inputs)
+            kld_loss = -0.5 * (1 + std.pow(2).log() - mu.pow(2) - std.pow(2)).sum(1).mean()
+            loss = recon_loss + kld_loss
 
-            ## total loss of D
-            D_loss = D_loss_real + D_loss_fake + clf_loss_real + clf_loss_fake
-
-
-            # G
-            disc_fake, clf_fake, generated = self.model(noise, inputs, for_D=False)
-
-            ## D on fake
-            G_loss_fake = self.gan_criterion(disc_fake, torch.ones_like(disc_fake))
-            clf_loss_fake = self.criterion(clf_fake, targets)
-
-            ## total loss of D
-            G_loss = G_loss_fake + clf_loss_fake
-
+            # collect clf results
             mm.track(
-                    loss=[(D_loss_real + D_loss_fake).detach().cpu(), G_loss_fake.detach().cpu()], 
-                    pred=generated.detach().cpu(),
-                    true=inputs.detach().cpu(), 
-                    suffix=['D', 'G'],
-                    calc_fid=False
-                )
-            mm.track(clf_loss_real.detach().cpu(), clf_real.detach().cpu(), targets)
+                loss=[recon_loss.detach().cpu(), kld_loss.detach().cpu()], 
+                pred=generated.detach().cpu(),
+                true=inputs.detach().cpu(), 
+                suffix=['recon', 'kl'],
+                calc_fid=False,
+                denormalize=False,
+            )
         else:
             self.model.to('cpu')
             mm.aggregate(len(self.test_set))

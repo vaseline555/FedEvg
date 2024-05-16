@@ -217,6 +217,9 @@ def check_args(args):
         assert 'gan' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
     elif args.algorithm == 'fedcvae':
         assert 'vae' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
+        assert args.criterion == 'MSELoss', f'{args.criterion} is NOT supported... please check!'
+        assert args.R == 1, f'{args.algorithm} only supports one-shot setting... please check!'
+        assert args.C == 1, f'{args.algorithm} only supports one-shot setting... please check!'
         
     # check model
     if args.use_pt_model:
@@ -396,12 +399,15 @@ class MetricManager:
                 if hasattr(func, '_use_youdenj'):
                     setattr(func, '_use_youdenj', True)
 
-    def track(self, loss, pred, true, suffix=None, calc_fid=False):
+    def track(self, loss, pred, true, suffix=None, calc_fid=False, denormalize=True):
         if suffix is not None:
             assert isinstance(loss, list)
             for s, l in zip(suffix, loss):
                 self.figures[f"loss_{s}"] += l * len(pred)
-            self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone().mul(0.5).add(0.5) # [0, 1]
+            if denormalize:
+                self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone().mul(0.5).add(0.5) # [0, 1]
+            else:
+                self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone()
             if calc_fid:
                 for name, module in self.metric_funcs.items():
                     if 'fid' in name.lower():
@@ -422,7 +428,7 @@ class MetricManager:
                 running_figures[key] = self.figures[key] / total_len
         if curr_step is not None:
             self._results[curr_step] = {
-                'loss': running_figures['loss'], 
+                'loss': running_figures['loss'] if 'loss' in running_figures.keys() else None, 
                 'metrics': {name: running_figures[name] for name in self.metric_funcs.keys()}
                 }
             if len(running_figures.keys()) > 1:
@@ -432,7 +438,7 @@ class MetricManager:
                 self._results[curr_step]['generated'] = self.figures['generated']
         else:
             self._results = {
-                'loss': running_figures['loss'], 
+                'loss': running_figures['loss'] if 'loss' in running_figures.keys() else None, 
                 'metrics': {name: running_figures[name] for name in self.metric_funcs.keys()}
                 }
             if len(running_figures.keys()) > 1:
