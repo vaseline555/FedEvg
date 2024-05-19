@@ -27,3 +27,5 @@ from .efficientnetpt import EfficientNetPT
 from .danet import DANet
 from .acgan import ACGAN
 from .cvae import CVAE
+from .unetddpm import UNetDDPM
+from ._inception import InceptionV3

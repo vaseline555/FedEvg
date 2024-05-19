@@ -6,6 +6,7 @@ from PIL import Image
 from collections import defaultdict
 
 from src import MetricManager
+from src.models import ResNet10
 from .fedavgserver import FedavgServer
 
 logger = logging.getLogger(__name__)
@@ -16,44 +17,37 @@ class FedcvaeServer(FedavgServer):
     def __init__(self, **kwargs):
         super(FedcvaeServer, self).__init__(**kwargs)
         # init server-side classifier and decoder
-        classifier = torch.nn.Sequential(
-            torch.nn.Conv2d(self.args.in_channels, self.args.hidden_size, 3, 1, 1),
-            torch.nn.MaxPool2d(2),
-            torch.nn.Conv2d(self.args.hidden_size, self.args.hidden_size * 4, 3, 1, 1),
-            torch.nn.MaxPool2d(2),
-            torch.nn.Flatten(),
-            torch.nn.Linear(self.args.hidden_size * 4 * (self.args.resize // 4)**2, self.args.hidden_size**2),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(self.args.hidden_size**2, self.args.num_classes)
-        )
+        classifier = ResNet10(self.args.resize, self.args.in_channels, self.args.hidden_size, self.args.num_classes)
         self.classifier = self._init_model(classifier)
+        
         self.decoder = self.global_model.decoder
+        self.results['model_parameter_counts'] = sum(p.numel() for p in self.decoder.parameters()) 
 
         # init container for storing local decoders and label distributions
         self.local_decoder_container = dict()
         self.local_label_container = dict()
 
         # ...others
-        self.num_train_samples = 10000 # half for decoder and half for classifier
+        self.num_train_samples = 10000 
         self.aggregated_synthetic_dataset = None # aggregated synthetic samples from local decoders for training global decoder
         self.central_synthetic_dataset = None # synthetic samples from the trained central decoder for training global classifier
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
-        losses, kosses_kl, losses_recon, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
+        losses, losses_kl, losses_recon, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
         generated = list()
 
         for identifier, result in results.items():
             client_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [{"EVALUATE" if eval else "UPDATE"}] [CLIENT] < {str(identifier).zfill(6)} > '
             if eval: # get loss and metrics
                 # loss recon
-                loss_reocn = result['loss_recon']
-                client_log_string += f'| loss (recon.): {loss_reocn:.4f} '
-                losses_recon.append(loss_reocn)
+                loss_recon = result['loss_recon']
+                client_log_string += f'| loss (recon.): {loss_recon:.4f} '
+                losses_recon.append(loss_recon)
 
                 # loss kl
                 loss_kl = result['loss_kl']
                 client_log_string += f'| loss (kl): {loss_kl:.4f} '
-                kosses_kl.append(loss_kl)
+                losses_kl.append(loss_kl)
 
                 # collect generated samples
                 gen_img = result['generated'].unsqueeze(0)
@@ -65,14 +59,14 @@ class FedcvaeServer(FedavgServer):
                     metrics[metric].append(value)
             else: # same, but retireve results of last epoch's
                 # loss recon
-                loss_reocn = result[self.args.E]['loss_recon']
-                client_log_string += f'| loss (recon): {loss_reocn:.4f} '
-                losses_recon.append(loss_reocn)
+                loss_recon = result[self.args.E]['loss_recon']
+                client_log_string += f'| loss (recon): {loss_recon:.4f} '
+                losses_recon.append(loss_recon)
 
                 # loss kl
                 loss_kl = result[self.args.E]['loss_kl']
                 client_log_string += f'| loss (kl): {loss_kl:.4f} '
-                kosses_kl.append(loss_kl)
+                losses_kl.append(loss_kl)
 
                 # collect generated samples
                 gen_img = result[self.args.E]['generated'].unsqueeze(0)
@@ -98,7 +92,7 @@ class FedcvaeServer(FedavgServer):
         losses_recon_array = np.array(losses_recon).astype(float)
         weighted_recon = losses_recon_array.dot(num_samples) / sum(num_samples); std_recon = losses_recon_array.std()
 
-        losses_kl_array = np.array(kosses_kl).astype(float)
+        losses_kl_array = np.array(losses_kl).astype(float)
         weighted_kl = losses_kl_array.dot(num_samples) / sum(num_samples); std_kl = losses_kl_array.std()
 
         total_log_string += f'\n    - Loss (Recon.): Avg. ({weighted_recon:.4f}) Std. ({std_recon:.4f}) | Loss (KL Div.): Avg. ({weighted_kl:.4f}) Std. ({std_kl:.4f})'
@@ -138,19 +132,17 @@ class FedcvaeServer(FedavgServer):
 
         # generated images
         gen_imgs = np.concatenate(generated)
-        viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-        to_viz = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        to_viz = np.transpose(to_viz, (1, 2, 0))
+        if len(gen_imgs) > 1:
+            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
         self.writer.add_image(
             f'Local {"Test" if eval else "Training"} Generated Image' + eval * f' ({"In" if participated else "Out"})', 
-            to_viz, 
+            gen_imgs, 
             self.round,
             dataformats='HWC'
         )
-        viz_opt = 'L' if to_viz.shape[-1] == 1 else 'RGB'
-        img = Image.fromarray(to_viz.squeeze(), viz_opt)
-        img.save(f'{self.args.result_path}/{"test" if eval else "train"}_generated_{str(self.round).zfill(4)}.png')
-        
+
         # log total message
         self.writer.flush()
         logger.info(total_log_string)
@@ -175,43 +167,34 @@ class FedcvaeServer(FedavgServer):
         self.classifier.to(self.args.device)
 
         clf_losses, corrects = 0, 0
-        for inputs, targets in torch.utils.data.DataLoader(
-            dataset=self.server_dataset, 
-            batch_size=self.args.B, 
-            shuffle=False
-        ):
+        for (synth, _, _), (inputs, targets) in zip(
+                torch.utils.data.DataLoader(
+                    self.aggregated_synthetic_dataset,
+                    batch_size=self.args.B,
+                    shuffle=False
+                ), 
+                torch.utils.data.DataLoader(
+                    dataset=self.server_dataset, 
+                    batch_size=self.args.B, 
+                    shuffle=False
+                )
+            ):
             # real image and label
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
-
-            # one-hot encode label
-            targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
-                targets
-            ].view(-1, self.args.num_classes)
-            
-            # inference
-            generated = self.decoder(
-                torch.cat([
-                    torch.randn(targets_hot.size(0), 100).to(targets_hot.device), 
-                    targets_hot
-                    ], dim=1)
-                    )
             logits = self.classifier(inputs)
 
             # Calculate losses
-            recon_loss = torch.nn.__dict__[self.args.criterion]()(generated, inputs)
             clf_loss = torch.nn.CrossEntropyLoss()(logits, targets)
-            loss = recon_loss
             clf_losses += clf_loss.item()
             corrects += logits.argmax(1).eq(targets).sum().item()
 
             # collect clf results
             mm.track(
-                loss=[recon_loss.detach().cpu(), torch.zeros(1)], 
-                pred=generated.detach().cpu(),
+                loss=[clf_loss.detach().cpu(), torch.zeros(1)], 
+                pred=synth.detach().cpu(),
                 true=inputs.detach().cpu(), 
-                suffix=['recon', 'kl'],
-                calc_fid=True,
-                denormalize=False
+                suffix=['clf', 'none'],
+                calc_fid=True
             )
         else:
             self.global_model.to('cpu')
@@ -227,31 +210,29 @@ class FedcvaeServer(FedavgServer):
         server_log_string += f'| clf loss: {clf_losses:.4f} | accuracy: {corrects * 100:.2f}%'
         logger.info(server_log_string)
         
-        self.writer.add_scalar('Server Classification Loss', clf_losses, 1)
-        self.writer.add_scalar('Server Accuracy', corrects * 100, 1)
+        self.writer.add_scalar('Server Test Loss', clf_losses, 1)
+        self.writer.add_scalar('Server Test Acc1', corrects * 100, 1)
 
         # generated images
-        gen_imgs = generated.detach().cpu().numpy()
-        viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-        to_viz = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        to_viz = np.transpose(to_viz, (1, 2, 0))
+        gen_imgs = synth.detach().cpu().numpy()
+        if len(gen_imgs) > 1:
+            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
         self.writer.add_image(
             'Server Generated Image', 
-            to_viz, 
+            gen_imgs, 
             self.round // self.args.eval_every,
             dataformats='HWC'
         )
-        viz_opt = 'L' if to_viz.shape[-1] == 1 else 'RGB'
-        img = Image.fromarray(to_viz.squeeze(), viz_opt)
-        img.save(f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.png')
 
         # log TensorBoard
-        self.writer.add_scalar(f'Server FID', mm.results['metrics']['fid'], self.round // self.args.eval_every)
+        self.writer.add_scalar(f'Server Test Fid', mm.results['metrics']['fid'], self.round // self.args.eval_every)
         self.writer.flush()
         
         result['fid'] = mm.results['metrics']['fid']
-        result['clf_loss'] = clf_losses
-        result['accuracy'] = corrects * 100
+        result['loss'] = clf_losses
+        result['acc1'] = corrects * 100
         self.results[self.round]['server_evaluated'] = result
 
     def update(self):
@@ -281,9 +262,10 @@ class FedcvaeServer(FedavgServer):
         for idx in range(self.args.K):
             # determine number of samples proportional to local sample size
             if idx == self.args.K - 1:
-                n_samples = self.num_train_samples // 2 - train_samples_obtained
+                n_samples = self.num_train_samples - train_samples_obtained
             else:
-                n_samples = int(local_data_stat[idx] / total_data * self.num_train_samples // 2)
+                n_samples = int((local_data_stat[idx] / total_data) * self.num_train_samples)
+            train_samples_obtained += n_samples
 
             # init latent inputs and targets following local label distribution
             latents = torch.randn(n_samples, 100).to(self.args.device)
@@ -343,12 +325,12 @@ class FedcvaeServer(FedavgServer):
             logger.info(
                 f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] KD Loss: {kd_losses:.4f}'
             )
-        self.writer.add_scalar('Server KD Loss', kd_losses, 1)
-        self.results['server_kd_loss'] = kd_losses
+        self.writer.add_scalar('Server Training KD Loss', kd_losses, 1)
+        self.results['server_training_kd_loss'] = kd_losses
 
         # generate from the trained server decoder
-        n_samples = self.num_train_samples // 2
-        latents = torch.cat(latents_synth)#torch.randn(n_samples, 100).to(self.args.device)
+        n_samples = self.num_train_samples
+        latents = torch.cat(latents_synth).to(self.args.device) #torch.randn(n_samples, 100).to(self.args.device)
         targets = torch.arange(self.args.num_classes).repeat(n_samples // self.args.num_classes)
         targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
             targets
@@ -365,6 +347,15 @@ class FedcvaeServer(FedavgServer):
             self.central_synthetic_dataset,
             batch_size=self.args.B,
             shuffle=True
+        )
+
+        # save server-side synthetic dataset
+        inputs_synth = inputs.mul(255).numpy().astype(np.uint8)
+        targets_synth = targets.numpy().astype(int)
+        np.savez(
+            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
+            inputs=inputs_synth,
+            targets=targets_synth
         )
 
         # train server-side classifier
@@ -389,9 +380,9 @@ class FedcvaeServer(FedavgServer):
             logger.info(
                 f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Clf Loss: {clf_losses:.4f} | Acc.: {corrects * 100:.4f}%'
             )
-        self.writer.add_scalar('Server Classification Loss', clf_losses, 1)
-        self.writer.add_scalar('Server Accuracy', corrects * 100, 1)
+            self.writer.add_scalar('Server Training Loss', clf_losses, epoch)
+            self.writer.add_scalar('Server Training Acc1', corrects * 100, epoch)
         
-        self.results['server_clf_loss'] = clf_losses
-        self.results['server_accuracy'] = corrects * 100
+        self.results['server_training_loss'] = clf_losses
+        self.results['server_training_acc1'] = corrects * 100
         return [i for i in range(self.args.K)]

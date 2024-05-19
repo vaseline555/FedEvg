@@ -73,12 +73,14 @@ class FedcvaeClient(FedavgClient):
 
                 # collect clf results
                 mm.track(
-                    loss=[recon_loss.detach().cpu(), kld_loss.detach().cpu()], 
+                    loss=[
+                        recon_loss.detach().cpu().item(), 
+                        kld_loss.detach().cpu().item()
+                    ], 
                     pred=generated.detach().cpu(),
                     true=inputs.detach().cpu(), 
                     suffix=['recon', 'kl'],
-                    calc_fid=False,
-                    denormalize=False
+                    calc_fid=False
                 )
             else:
                 mm.aggregate(len(self.training_set), e + 1)
@@ -114,12 +116,14 @@ class FedcvaeClient(FedavgClient):
 
             # collect clf results
             mm.track(
-                loss=[recon_loss.detach().cpu(), kld_loss.detach().cpu()], 
+                loss=[
+                    recon_loss.detach().cpu().item(), 
+                    kld_loss.detach().cpu().item()
+                ], 
                 pred=generated.detach().cpu(),
                 true=inputs.detach().cpu(), 
                 suffix=['recon', 'kl'],
-                calc_fid=False,
-                denormalize=False,
+                calc_fid=False
             )
         else:
             self.model.to('cpu')

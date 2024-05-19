@@ -8,8 +8,8 @@ from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve,\
     average_precision_score, f1_score, precision_score, recall_score,\
         mean_squared_error, mean_absolute_error, mean_absolute_percentage_error,\
             r2_score, d2_pinball_score, top_k_accuracy_score, balanced_accuracy_score
-from pytorch_fid.inception import InceptionV3
 
+from src.models import InceptionV3
 from .basemetric import BaseMetric
 
 warnings.filterwarnings('ignore')
@@ -345,9 +345,11 @@ class Fid(BaseMetric):
         self.answers = []
     
     @torch.no_grad()
-    def _calculate_activation_statistics(self, images, batch_size=128, dims=2048, cuda=False):
-        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-        inception = InceptionV3([block_idx], normalize_input=False).cuda()
+    def _calculate_activation_statistics(self, images, batch_size=32, dims=2048, cuda=True):
+        device = f'cuda:{torch.randint(0, torch.cuda.device_count(), ()).item()}' if cuda else 'cpu'
+
+        inception = InceptionV3(normalize_input=False)
+        inception.to(device)
         inception.eval()
 
         # repeat channels for gray images
@@ -356,11 +358,8 @@ class Fid(BaseMetric):
     
         acts = []
         for image in torch.utils.data.DataLoader(images, batch_size=batch_size):
-            if cuda:
-                batch = image.cuda()
-            else:
-                batch = image
-            pred = inception(batch)[0]
+            image = image.to(device)
+            pred = inception(image)[0]
 
             # If model output is not scalar, apply global spatial average pooling.
             # This happens if you choose a dimensionality not equal 2048.

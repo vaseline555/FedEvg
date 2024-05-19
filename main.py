@@ -118,7 +118,7 @@ if __name__ == "__main__":
             'ShuffleNet', 'MobileNeXt', 'SqueezeNeXt', 'MobileViT', 
             'StackedLSTM', 'StackedGRU', 'StackedTransformer', 'LogReg', 'M5',
             'DistilBert', 'SqueezeBert', 'MobileBert', 'Bert', 'UNet3D', 'EfficientNetPT', 'DANet',
-            'ACGAN', 'CVAE'
+            'ACGAN', 'CVAE', 'CNN', 'UNetDDPM'
         ],
         required=True
     )
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         choices=[
             'fedavg', 'fedsgd', 'fedprox', 'fedavgm', 
             'fedadam', 'fedyogi', 'fedadagrad', 
-            'flgan', 'fedcvae'
+            'fedcgan', 'fedcvae', 'fedcddpm', 'feddm'
         ], 
         required=True
     )

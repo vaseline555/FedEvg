@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 
 
-class FlganClient(FedavgClient):
+class FedcganClient(FedavgClient):
     def __init__(self, **kwargs):
-        super(FlganClient, self).__init__(**kwargs)
+        super(FedcganClient, self).__init__(**kwargs)
         self.gan_criterion = torch.nn.BCELoss()
         
     @torch.enable_grad()
@@ -90,13 +90,16 @@ class FlganClient(FedavgClient):
 
                 # collect clf results
                 mm.track(
-                    loss=[(D_loss_real + D_loss_fake).detach().cpu(), G_loss_fake.detach().cpu()], 
+                    loss=[
+                        (D_loss_real + D_loss_fake).detach().cpu().item(), 
+                        G_loss_fake.detach().cpu().item()
+                    ], 
                     pred=generated.detach().cpu(),
                     true=inputs.detach().cpu(), 
                     suffix=['D', 'G'],
                     calc_fid=False
                 )
-                mm.track(clf_loss_real.detach().cpu(), clf_real.detach().cpu(), targets)
+                mm.track(clf_loss_real.detach().cpu().item(), clf_real.detach().cpu(), targets)
             else:
                 mm.aggregate(len(self.training_set), e + 1)
         else:
@@ -152,13 +155,16 @@ class FlganClient(FedavgClient):
             G_loss = G_loss_fake + clf_loss_fake
 
             mm.track(
-                    loss=[(D_loss_real + D_loss_fake).detach().cpu(), G_loss_fake.detach().cpu()], 
+                    loss=[
+                        (D_loss_real + D_loss_fake).detach().cpu().item(), 
+                        G_loss_fake.detach().cpu().item()
+                    ], 
                     pred=generated.detach().cpu(),
                     true=inputs.detach().cpu(), 
                     suffix=['D', 'G'],
                     calc_fid=False
                 )
-            mm.track(clf_loss_real.detach().cpu(), clf_real.detach().cpu(), targets)
+            mm.track(clf_loss_real.detach().cpu().item(), clf_real.detach().cpu(), targets)
         else:
             self.model.to('cpu')
             mm.aggregate(len(self.test_set))

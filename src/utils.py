@@ -213,14 +213,18 @@ def check_args(args):
             err = f'server momentum factor (i.e., `beta1`) should be positive... please check!'
             logger.exception(err)
             raise AssertionError(err)
-    elif args.algorithm == 'flgan':
+    elif args.algorithm == 'fedcgan':
         assert 'gan' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
     elif args.algorithm == 'fedcvae':
         assert 'vae' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
         assert args.criterion == 'MSELoss', f'{args.criterion} is NOT supported... please check!'
         assert args.R == 1, f'{args.algorithm} only supports one-shot setting... please check!'
         assert args.C == 1, f'{args.algorithm} only supports one-shot setting... please check!'
-        
+    elif args.algorithm == 'fedcddpm':
+        assert args.model_name.lower() == 'unetddpm', f'{args.model_name} is NOT supported... please check!'
+        assert args.criterion == 'MSELoss', f'{args.criterion} is NOT supported... please check!'
+        assert args.test_size == 0, f'{args.algorithm} does not support local evaluation... please check!'
+
     # check model
     if args.use_pt_model:
         assert args.model_name in ['EfficientNetPT', 'DistilBert', 'SqueezeBert', 'MobileBert', 'Bert']
@@ -399,15 +403,12 @@ class MetricManager:
                 if hasattr(func, '_use_youdenj'):
                     setattr(func, '_use_youdenj', True)
 
-    def track(self, loss, pred, true, suffix=None, calc_fid=False, denormalize=True):
+    def track(self, loss, pred, true, suffix=None, calc_fid=False):
         if suffix is not None:
             assert isinstance(loss, list)
             for s, l in zip(suffix, loss):
                 self.figures[f"loss_{s}"] += l * len(pred)
-            if denormalize:
-                self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone().mul(0.5).add(0.5) # [0, 1]
-            else:
-                self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone()
+            self.figures['generated'] = pred[torch.randint(0, len(pred), ())].clone()
             if calc_fid:
                 for name, module in self.metric_funcs.items():
                     if 'fid' in name.lower():

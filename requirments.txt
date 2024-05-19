@@ -11,4 +11,3 @@ torchtext==0.13.0
 torchaudio==0.12.0
 monai==1.3.0
 nibabel==5.1.0
-pytorch-fid==0.3.0

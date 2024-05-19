@@ -19,7 +19,10 @@ def load_model(args):
     for argument in required_args:
         if argument == 'self': 
             continue
-        model_args[argument] = getattr(args, argument)
+        try:
+            model_args[argument] = getattr(args, argument)
+        except:
+            continue
 
     # get model instance
     model = model_class(**model_args)

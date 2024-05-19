@@ -6,15 +6,19 @@ from PIL import Image
 from collections import defaultdict
 
 from src import MetricManager
+from src.models import ResNet10
 from .fedavgserver import FedavgServer
 
 logger = logging.getLogger(__name__)
 
 
 
-class FlganServer(FedavgServer):
+class FedcganServer(FedavgServer):
     def __init__(self, **kwargs):
-        super(FlganServer, self).__init__(**kwargs)
+        super(FedcganServer, self).__init__(**kwargs)
+        classifier = ResNet10(self.args.resize, self.args.in_channels, self.args.hidden_size, self.args.num_classes)
+        self.classifier = self._init_model(classifier)
+        self.results['model_parameter_counts'] = sum(p.numel() for p in self.global_model.parameters()) 
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
         losses, losses_D, losses_G, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
@@ -149,97 +153,156 @@ class FlganServer(FedavgServer):
         logger.info(total_log_string)
         return result_dict
 
-    @torch.no_grad()
     def _central_evaluate(self):
         mm = MetricManager(self.args.eval_metrics)
         gan_criterion = torch.nn.BCELoss()
+        
+        # Generate server-side synthetic samples
+        num_samples = 10000
+        inputs_synth, targets_synth = [], []
+        
         self.global_model.to(self.args.device)
-
-        for inputs, targets in torch.utils.data.DataLoader(
-            dataset=self.server_dataset, 
-            batch_size=self.args.B, 
-            shuffle=False
-        ):
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
-
-            fake_label = torch.randint(self.args.num_classes, (inputs.size(0),)).long().to(self.args.device)
-            noise = torch.randn(inputs.size(0), self.args.hidden_size * 2, 1, 1).to(self.args.device)
+        self.global_model.eval()
+        with torch.no_grad():
+            targets_synth = torch.randint(self.args.num_classes, (num_samples,)).long().to(self.args.device)
+            noise = torch.randn(num_samples, self.args.hidden_size * 2, 1, 1).to(self.args.device)
             noise = torch.cat([
                 noise, 
                 torch.eye(self.args.num_classes).to(self.args.device)[
-                    targets
+                    targets_synth
                 ].view(-1, self.args.num_classes, 1, 1)
             ], dim=1)
+            inputs_synth = self.global_model.generator(noise)
+        self.global_model.to('cpu')
 
-            # D
-            disc_fake, disc_real, clf_fake, clf_real = self.global_model(noise, inputs, for_D=True)
-            
-            ## D on real
-            D_loss_real = gan_criterion(disc_real, torch.ones_like(disc_real))
-            clf_loss_real = torch.nn.__dict__[self.args.criterion]()(clf_real, targets)
+        # Train server-side classifier
+        self.classifier.to(self.args.device)
+        self.classifier.train()
+        clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.001)
+        clf_losses, corrects = 0, 0
+        for (inputs, targets) in torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(
+                    inputs_synth.cpu(), 
+                    targets_synth.cpu()
+                ),
+                batch_size=self.args.B,
+                shuffle=True
+            ):
+            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            outputs = self.classifier(inputs)
 
-            ## D on fake
-            D_loss_fake = gan_criterion(disc_fake, torch.zeros_like(disc_fake))
-            clf_loss_fake = torch.nn.__dict__[self.args.criterion]()(clf_fake, torch.ones_like(targets).mul(fake_label).long())
+            # Calculate losses
+            clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
+            clf_losses += clf_loss.item()
+            corrects += outputs.argmax(1).eq(targets).sum().item()
 
-            ## total loss of D
-            D_loss = D_loss_real + D_loss_fake + clf_loss_real + clf_loss_fake
+            clf_optimizer.zero_grad()
+            clf_loss.backward()
+            clf_optimizer.step()
 
+            # collect clf results
+            mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+        else:
+            self.classifier.to('cpu')
+            mm.aggregate(len(self.server_dataset))
+            clf_losses /= len(self.server_dataset)
+            corrects /= len(self.server_dataset)
 
-            # G
-            disc_fake, clf_fake, generated = self.global_model(noise, inputs, for_D=False)
+        # log result
+        result = dict()
+        server_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [SERVER] '
 
-            ## D on fake
-            G_loss_fake = gan_criterion(disc_fake, torch.ones_like(disc_fake))
-            clf_loss_fake = torch.nn.__dict__[self.args.criterion]()(clf_fake, targets)
+        ## metrics
+        server_log_string += f'| clf loss: {clf_losses:.4f} | accuracy: {corrects * 100:.2f}%'
+        logger.info(server_log_string)
+        
+        self.writer.add_scalar('Server Train Loss', clf_losses, self.round // self.args.eval_every)
+        self.writer.add_scalar('Server Train Acc1', corrects * 100, self.round // self.args.eval_every)
 
-            ## total loss of D
-            G_loss = G_loss_fake + clf_loss_fake
+        # Evaluate server-side classifier
+        with torch.no_grad():
+            mm = MetricManager(self.args.eval_metrics)
+            self.classifier.to(self.args.device)
+            self.classifier.eval()
+            clf_losses, corrects = 0, 0
+            for (synth, _), (inputs, targets) in zip(
+                torch.utils.data.DataLoader(
+                    torch.utils.data.TensorDataset(
+                        inputs_synth.detach().cpu(), 
+                        targets_synth.detach().cpu()
+                    ),
+                    batch_size=self.args.B,
+                    shuffle=False
+                ), 
+                torch.utils.data.DataLoader(
+                    dataset=self.server_dataset, 
+                    batch_size=self.args.B, 
+                    shuffle=False
+                )
+            ):
+                inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+                outputs = self.classifier(inputs)
 
-            mm.track(
-                    loss=[(D_loss_real + D_loss_fake).detach().cpu(), G_loss_fake.detach().cpu()], 
-                    pred=generated.detach().cpu(),
-                    true=inputs.detach().cpu(), 
-                    suffix=['D', 'G'],
+                # Calculate losses
+                clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
+                clf_losses += clf_loss.item()
+                corrects += outputs.argmax(1).eq(targets).sum().item()
+
+                # collect for fid
+                mm.track(
+                    loss=[torch.ones(1).mul(-1).item(), torch.ones(1).mul(-1).item()], 
+                    pred=synth.cpu(),
+                    true=inputs.cpu(), 
+                    suffix=['none', 'none'],
                     calc_fid=True
                 )
-            mm.track(clf_loss_real.detach().cpu(), clf_real.detach().cpu(), targets)
-        else:
-            self.global_model.to('cpu')
-            mm.aggregate(len(self.server_dataset))
+
+                # collect clf results
+                mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+            else:
+                self.classifier.to('cpu')
+                mm.aggregate(len(self.server_dataset))
+                clf_losses /= len(self.server_dataset)
+                corrects /= len(self.server_dataset)
 
         # log result
         result = mm.results
+        generated = result['generated'].clone()
+        del result['generated']
         server_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [SERVER] '
 
-        ## loss
-        loss = result['loss']
-        server_log_string += f'| loss: {loss:.4f} '
-        
-        ## metrics
-        for metric, value in result['metrics'].items():
-            server_log_string += f'| {metric}: {value:.4f} '
+        # loss
+        server_log_string += f'| clf loss: {clf_losses:.4f} | accuracy: {corrects * 100:.2f}%'
         logger.info(server_log_string)
-
+        
         # generated images
-        gen_imgs = generated.mul(0.5).add(0.5).detach().cpu().numpy()
-        viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-        to_viz = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        to_viz = np.transpose(to_viz, (1, 2, 0))
+        gen_imgs = synth.detach().cpu().numpy()
+        if len(gen_imgs) > 1:
+            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
+        
         self.writer.add_image(
             'Server Generated Image', 
-            to_viz, 
+            gen_imgs, 
             self.round // self.args.eval_every,
             dataformats='HWC'
         )
-        viz_opt = 'L' if to_viz.shape[-1] == 1 else 'RGB'
-        img = Image.fromarray(to_viz.squeeze(), viz_opt)
-        img.save(f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.png')
+
+        # save server-side synthetic dataset
+        inputs_synth = inputs_synth.detach().cpu().mul(0.5).add(0.5).mul(255).numpy().astype(np.uint8)
+        targets_synth = targets_synth.detach().cpu().numpy().astype(int)
+        np.savez(
+            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
+            inputs=inputs_synth,
+            targets=targets_synth
+        )
 
         # log TensorBoard
-        self.writer.add_scalar('Server Loss', loss, self.round // self.args.eval_every)
+        self.writer.add_scalar('Server Test Loss', clf_losses, self.round // self.args.eval_every)
         for name, value in result['metrics'].items():
-            self.writer.add_scalar(f'Server {name.title()}', value, self.round // self.args.eval_every)
+            self.writer.add_scalar(f'Server Test {name.title()}', value, self.round // self.args.eval_every)
         else:
             self.writer.flush()
         self.results[self.round]['server_evaluated'] = result
+
