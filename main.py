@@ -118,12 +118,13 @@ if __name__ == "__main__":
             'ShuffleNet', 'MobileNeXt', 'SqueezeNeXt', 'MobileViT', 
             'StackedLSTM', 'StackedGRU', 'StackedTransformer', 'LogReg', 'M5',
             'DistilBert', 'SqueezeBert', 'MobileBert', 'Bert', 'UNet3D', 'EfficientNetPT', 'DANet',
-            'ACGAN', 'CVAE', 'CNN', 'UNetDDPM'
+            'ACGAN', 'CVAE', 'UNetDDPM'
         ],
         required=True
     )
     parser.add_argument('--hidden_size', help='hidden channel size for vision models, or hidden dimension of language models', type=int, default=64)
     parser.add_argument('--dropout', help='dropout rate', type=float, choices=[Range(0., 1.)], default=0.)
+    parser.add_argument('--penult_spectral_norm', help='use a spectral normalization of the last layer of the model (if passed)', action='store_true')
     parser.add_argument('--use_model_tokenizer', help='use a model-specific tokenizer (if passed)', action='store_true')
     parser.add_argument('--use_pt_model', help='use a pre-trained model weights for fine-tuning (if passed)', action='store_true')
     parser.add_argument('--seq_len', help='maximum sequence length used for `torchtext.datasets`)', type=int, default=None)
@@ -141,7 +142,7 @@ if __name__ == "__main__":
         choices=[
             'fedavg', 'fedsgd', 'fedprox', 'fedavgm', 
             'fedadam', 'fedyogi', 'fedadagrad', 
-            'fedcgan', 'fedcvae', 'fedcddpm', 'feddm'
+            'fedcgan', 'fedcvae', 'fedcddpm', 'feddm', 'fedevg'
         ], 
         required=True
     )
@@ -159,7 +160,7 @@ if __name__ == "__main__":
         choices=[
             'acc1', 'acc5', 'auroc', 'auprc', 'youdenj', 'f1', 'precision', 'recall',
             'seqacc', 'mse', 'mae', 'mape', 'rmse', 'r2', 'd2', 'dice', 'balacc',
-            'fid'
+            'fid', 'ece'
         ], nargs='+', required=True
     )
     parser.add_argument('--K', help='number of total cilents participating in federated training', type=int, default=100)
@@ -185,6 +186,7 @@ if __name__ == "__main__":
     parser.add_argument('--mu', help='constant for proximity regularization term (valid only if the algorithm is `fedprox`)', type=float, choices=[Range(0., 1e6)], default=0)
     parser.add_argument('--tau', help='degree of adaptivity (valid only if the algorithm is one of [`fedadam`, `fedyogi`, `fedadagrad`])', type=float, choices=[Range(1e-5, 1e2)], default=1e-3)
     parser.add_argument('--server_lr', help='server learning rate', type=float, choices=[Range(0., float('inf'))], default=1)
+    parser.add_argument('--spc', help='sampels per classes', type=int, choices=[Range(1., float('inf'))], default=10)
 
     # parse arguments
     args = parser.parse_args()

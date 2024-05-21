@@ -9,7 +9,6 @@ from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve,\
         mean_squared_error, mean_absolute_error, mean_absolute_percentage_error,\
             r2_score, d2_pinball_score, top_k_accuracy_score, balanced_accuracy_score
 
-from src.models import InceptionV3
 from .basemetric import BaseMetric
 
 warnings.filterwarnings('ignore')
@@ -346,6 +345,7 @@ class Fid(BaseMetric):
     
     @torch.no_grad()
     def _calculate_activation_statistics(self, images, batch_size=32, dims=2048, cuda=True):
+        from src.models import InceptionV3
         device = f'cuda:{torch.randint(0, torch.cuda.device_count(), ()).item()}' if cuda else 'cpu'
 
         inception = InceptionV3(normalize_input=False)
@@ -423,3 +423,21 @@ class Fid(BaseMetric):
         mu_1, std_1 = self._calculate_activation_statistics(answers, cuda=True)
         mu_2, std_2 = self._calculate_activation_statistics(scores, cuda=True)
         return self._calculate_frechet_distance(mu_1, std_1, mu_2, std_2)
+
+class Ece(BaseMetric):
+    def __init__(self):
+        self.scores = []
+        self.answers = []
+
+    def collect(self, pred, true):
+        p, t = pred.detach().cpu(), true.detach().cpu()
+        self.scores.append(p)
+        self.answers.append(t)
+
+    def summarize(self):
+        from src.utils import CalibrationError
+        ece = CalibrationError()
+        scores = torch.cat(self.scores)
+        answers = torch.cat(self.answers)
+        return ece(scores, answers).numpy()
+    

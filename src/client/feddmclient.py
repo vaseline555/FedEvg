@@ -45,11 +45,10 @@ class FeddmClient(FedavgClient):
         model.train()
         model.to(self.args.device)
         
-        samples_per_class = 10000 // int(self.args.C * self.args.K) // self.args.num_classes
+        samples_per_class = self.args.spc
         inputs_synth = torch.randn(self.args.num_classes * samples_per_class, self.args.in_channels, self.args.resize, self.args.resize).to(self.args.device)
         targets_synth = torch.cat([torch.ones(samples_per_class).mul(c) for c in range(self.args.num_classes)]).view(-1).long().to(self.args.device)
 
-        optimizer = self.optim([inputs_synth], **self._refine_optim_args(self.args))
         for e in range(self.args.E):
             model = self._random_perturb(copy.deepcopy(model))
             for param in model.parameters():
@@ -66,6 +65,7 @@ class FeddmClient(FedavgClient):
                     indices.append(idx.item())
                 synths = torch.stack(synths)
                 synths.requires_grad_(True)
+                optimizer = self.optim([synths], **self._refine_optim_args(self.args))
 
                 real_features = model.features(inputs).detach()
                 synth_features = model.features(synths)
@@ -121,6 +121,24 @@ class FeddmClient(FedavgClient):
             
             outputs = self.model(inputs)
             loss = self.criterion(outputs, targets)
+
+            mm.track(loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+        else:
+            self.model.to('cpu')
+            mm.aggregate(len(self.test_set))
+        return mm.results
+
+    @torch.no_grad()
+    def evaluate_classifier(self):
+        mm = MetricManager(self.args.eval_metrics)
+        self.model.eval()
+        self.model.to(self.args.device)
+
+        for inputs, targets in self.test_loader:
+            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            
+            outputs = self.model(inputs)
+            loss = torch.nn.CrossEntropyLoss()(outputs, targets)
 
             mm.track(loss.item(), outputs.detach().cpu(), targets.detach().cpu())
         else:

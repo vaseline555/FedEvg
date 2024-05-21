@@ -384,7 +384,7 @@ class ResidualBlock(torch.nn.Module):
         self.features = torch.nn.Sequential(
             torch.nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False),
             torch.nn.GroupNorm(planes // 2, planes),
-            torch.nn.ReLU(True),
+            torch.nn.ReLU(),
             torch.nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             torch.nn.GroupNorm(planes // 2, planes)
         )

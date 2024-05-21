@@ -129,3 +129,21 @@ class FedcvaeClient(FedavgClient):
             self.model.to('cpu')
             mm.aggregate(len(self.test_set))
         return mm.results
+
+    @torch.no_grad()
+    def evaluate_classifier(self):
+        mm = MetricManager(self.args.eval_metrics)
+        self.model.eval()
+        self.model.to(self.args.device)
+
+        for inputs, targets in self.test_loader:
+            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            
+            outputs = self.model(inputs)
+            loss = torch.nn.CrossEntropyLoss()(outputs, targets)
+
+            mm.track(loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+        else:
+            self.model.to('cpu')
+            mm.aggregate(len(self.test_set))
+        return mm.results

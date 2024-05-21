@@ -1,11 +1,12 @@
 import torch
 import logging
+import concurrent.futures
 import numpy as np
 
 from PIL import Image
-from collections import defaultdict
+from collections import ChainMap, defaultdict
 
-from src import MetricManager
+from src import MetricManager, TqdmToLogger
 from src.models import ResNet10
 from .fedavgserver import FedavgServer
 
@@ -19,8 +20,8 @@ class FedcvaeServer(FedavgServer):
         # init server-side classifier and decoder
         classifier = ResNet10(self.args.resize, self.args.in_channels, self.args.hidden_size, self.args.num_classes)
         self.classifier = self._init_model(classifier)
-        
         self.decoder = self.global_model.decoder
+        self.latent_dim = self.global_model.latent_dim
         self.results['model_parameter_counts'] = sum(p.numel() for p in self.decoder.parameters()) 
 
         # init container for storing local decoders and label distributions
@@ -28,7 +29,7 @@ class FedcvaeServer(FedavgServer):
         self.local_label_container = dict()
 
         # ...others
-        self.num_train_samples = 10000 
+        self.num_train_samples = self.args.num_classes * self.args.spc
         self.aggregated_synthetic_dataset = None # aggregated synthetic samples from local decoders for training global decoder
         self.central_synthetic_dataset = None # synthetic samples from the trained central decoder for training global classifier
 
@@ -162,7 +163,6 @@ class FedcvaeServer(FedavgServer):
     @torch.no_grad()
     def _central_evaluate(self):
         mm = MetricManager(self.args.eval_metrics)
-
         self.decoder.to(self.args.device)
         self.classifier.to(self.args.device)
 
@@ -211,7 +211,7 @@ class FedcvaeServer(FedavgServer):
         logger.info(server_log_string)
         
         self.writer.add_scalar('Server Test Loss', clf_losses, 1)
-        self.writer.add_scalar('Server Test Acc1', corrects * 100, 1)
+        self.writer.add_scalar('Server Test Acc1', corrects, 1)
 
         # generated images
         gen_imgs = synth.detach().cpu().numpy()
@@ -232,9 +232,96 @@ class FedcvaeServer(FedavgServer):
         
         result['fid'] = mm.results['metrics']['fid']
         result['loss'] = clf_losses
-        result['acc1'] = corrects * 100
+        result['acc1'] = corrects
         self.results[self.round]['server_evaluated'] = result
 
+        # local evaluate classifier
+        self._request_with_model(self.classifier)
+
+    def _request_with_model(self, model):
+        def __evaluate_clients(client):
+            if client.model is None:
+                client.download(model)
+            eval_result = client.evaluate_classifier() 
+            client.model = None
+            return {client.id: len(client.test_set)}, {client.id: eval_result}
+
+        logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request losses to all clients!')
+        jobs, results = [], []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.args.K, os.cpu_count() + 4) if self.args.max_workers == -1 else self.args.max_workers) as workhorse:
+            for idx in TqdmToLogger(
+                [i for i in range(self.args.K)], 
+                logger=logger, 
+                desc=f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...evaluate clients... ',
+                total=self.args.K
+                ):
+                jobs.append(workhorse.submit(__evaluate_clients, self.clients[idx]))
+            for job in concurrent.futures.as_completed(jobs):
+                results.append(job.result())
+        _eval_sizes, eval_results = list(map(list, zip(*results)))
+        _eval_sizes, eval_results = dict(ChainMap(*_eval_sizes)), dict(ChainMap(*eval_results))
+
+        losses, metrics, num_samples = list(), defaultdict(list), list()
+        for identifier, result in eval_results.items():
+            client_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [CLIENT] < {str(identifier).zfill(6)} > '
+            # loss
+            loss = result['loss']
+            client_log_string += f'| loss: {loss:.4f} '
+            losses.append(loss)
+            
+            # metrics
+            for metric, value in result['metrics'].items():
+                client_log_string += f'| {metric}: {value:.4f} '
+                metrics[metric].append(value)
+            
+            # get sample size
+            num_samples.append(_eval_sizes[identifier])
+
+            # log per client
+            logger.info(client_log_string)
+        else:
+            num_samples = np.array(num_samples).astype(float)
+
+        # aggregate into total logs
+        result_dict = defaultdict(dict)
+        total_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [SUMMARY] ({len(_eval_sizes)} clients):'
+
+        # loss
+        losses_array = np.array(losses).astype(float)
+        weighted = losses_array.dot(num_samples) / sum(num_samples); std = losses_array.std()
+
+        total_log_string += f'\n    - Loss: Avg. ({weighted:.4f}) Std. ({std:.4f})'
+        result_dict['loss'] = {'avg': weighted.astype(float), 'std': std.astype(float),}
+        result_dict['loss']['raw'] = losses
+        self.writer.add_scalars(
+            'Local Test Loss (ALL)',
+            {'Avg.': weighted, 'Std.': std},
+            self.round
+        )
+
+        # metrics
+        for name, val in metrics.items():
+            val_array = np.array(val).astype(float)
+            weighted = val_array.dot(num_samples) / sum(num_samples); std = val_array.std()
+
+            total_log_string += f'\n    - {name.title()}: Avg. ({weighted:.4f}) Std. ({std:.4f})'
+            result_dict[name] = {'avg': weighted.astype(float), 'std': std.astype(float)}   
+            result_dict[name]['raw'] = val
+
+            self.writer.add_scalars(
+                f'Local Test {name.title()} (ALL)',
+                {'Avg.': weighted, 'Std.': std},
+                self.round
+            )
+
+        # log total message
+        self.writer.flush()
+        logger.info(total_log_string)
+
+        self.results[self.round][f'clients_evaluated_server_model'] = result_dict
+        logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...completed evaluation of all clients!')
+        return eval_results
+        
     def update(self):
         """Update the global model through federated learning.
         """
@@ -256,19 +343,24 @@ class FedcvaeServer(FedavgServer):
         for idx in range(self.args.K):
             local_data_stat[idx] = len(self.clients[idx])
         total_data = sum(local_data_stat.values())
-
-        train_samples_obtained = 0 
+        
+        # divide train samples according to sample ratio
+        ratio = np.array(list(local_data_stat.values())) / total_data
+        train_samples = (ratio * (self.num_train_samples - self.args.K)).astype(int) + 1
+        
+        # replenish remaining samples
+        offset = self.num_train_samples - sum(train_samples)
+        if offset > 0:
+            offset_idx = torch.randint(0, self.args.K, ()).item()
+            train_samples[offset_idx] += offset
+        
         inputs_synth, latents_synth, targets_synth = [], [], []
         for idx in range(self.args.K):
             # determine number of samples proportional to local sample size
-            if idx == self.args.K - 1:
-                n_samples = self.num_train_samples - train_samples_obtained
-            else:
-                n_samples = int((local_data_stat[idx] / total_data) * self.num_train_samples)
-            train_samples_obtained += n_samples
+            n_samples = train_samples[idx]
 
             # init latent inputs and targets following local label distribution
-            latents = torch.randn(n_samples, 100).to(self.args.device)
+            latents = torch.randn(n_samples, self.latent_dim).to(self.args.device)
             targets = self.local_label_container[idx].multinomial(n_samples, replacement=True)
             targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
                 targets
@@ -362,27 +454,26 @@ class FedcvaeServer(FedavgServer):
         self.classifier.to(self.args.device)
         self.classifier.train()
         clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.001)
-        for epoch in range(self.args.E):
-            clf_losses, corrects = 0, 0
-            for inputs, targets in central_synthetic_dataloader:
-                inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
-                
-                outputs = self.classifier(inputs)
-                clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
-                clf_losses += clf_loss.item() * outputs.size(0)
-                corrects += outputs.argmax(1).eq(targets).sum().item()
+        clf_losses, corrects = 0, 0
+        for inputs, targets in central_synthetic_dataloader:
+            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            
+            outputs = self.classifier(inputs)
+            clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
+            clf_losses += clf_loss.item() * outputs.size(0)
+            corrects += outputs.argmax(1).eq(targets).sum().item()
 
-                clf_optimizer.zero_grad()
-                clf_loss.backward()
-                clf_optimizer.step()
-            clf_losses /= len(self.central_synthetic_dataset)
-            corrects /= len(self.central_synthetic_dataset)
-            logger.info(
-                f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Clf Loss: {clf_losses:.4f} | Acc.: {corrects * 100:.4f}%'
-            )
-            self.writer.add_scalar('Server Training Loss', clf_losses, epoch)
-            self.writer.add_scalar('Server Training Acc1', corrects * 100, epoch)
+            clf_optimizer.zero_grad()
+            clf_loss.backward()
+            clf_optimizer.step()
+        clf_losses /= len(self.central_synthetic_dataset)
+        corrects /= len(self.central_synthetic_dataset)
+        logger.info(
+            f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Clf Loss: {clf_losses:.4f} | Acc.: {corrects * 100:.4f}%'
+        )
+        self.writer.add_scalar('Server Training Loss', clf_losses, 1)
+        self.writer.add_scalar('Server Training Acc1', corrects, 1)
         
         self.results['server_training_loss'] = clf_losses
-        self.results['server_training_acc1'] = corrects * 100
+        self.results['server_training_acc1'] = corrects
         return [i for i in range(self.args.K)]
