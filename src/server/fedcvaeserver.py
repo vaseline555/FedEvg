@@ -1,3 +1,4 @@
+import copy
 import torch
 import logging
 import concurrent.futures
@@ -196,6 +197,7 @@ class FedcvaeServer(FedavgServer):
                 suffix=['clf', 'none'],
                 calc_fid=True
             )
+            mm.track(clf_loss.item(), logits.detach().cpu(), targets.detach().cpu()) 
         else:
             self.global_model.to('cpu')
             mm.aggregate(len(self.server_dataset))
@@ -236,14 +238,13 @@ class FedcvaeServer(FedavgServer):
         self.results[self.round]['server_evaluated'] = result
 
         # local evaluate classifier
-        self._request_with_model(self.classifier)
+        self._request_with_model()
 
-    def _request_with_model(self, model):
+    def _request_with_model(self):
         def __evaluate_clients(client):
-            if client.model is None:
-                client.download(model)
+            client.classifier = copy.deepcopy(self.classifier)
             eval_result = client.evaluate_classifier() 
-            client.model = None
+            client.classifier = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request losses to all clients!')
@@ -454,23 +455,24 @@ class FedcvaeServer(FedavgServer):
         self.classifier.to(self.args.device)
         self.classifier.train()
         clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.001)
-        clf_losses, corrects = 0, 0
-        for inputs, targets in central_synthetic_dataloader:
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
-            
-            outputs = self.classifier(inputs)
-            clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
-            clf_losses += clf_loss.item() * outputs.size(0)
-            corrects += outputs.argmax(1).eq(targets).sum().item()
+        for e in range(self.args.E):
+            clf_losses, corrects = 0, 0
+            for inputs, targets in central_synthetic_dataloader:
+                inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+                
+                outputs = self.classifier(inputs)
+                clf_loss = torch.nn.CrossEntropyLoss()(outputs, targets)
+                clf_losses += clf_loss.item() * outputs.size(0)
+                corrects += outputs.argmax(1).eq(targets).sum().item()
 
-            clf_optimizer.zero_grad()
-            clf_loss.backward()
-            clf_optimizer.step()
-        clf_losses /= len(self.central_synthetic_dataset)
-        corrects /= len(self.central_synthetic_dataset)
-        logger.info(
-            f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Clf Loss: {clf_losses:.4f} | Acc.: {corrects * 100:.4f}%'
-        )
+                clf_optimizer.zero_grad()
+                clf_loss.backward()
+                clf_optimizer.step()
+            clf_losses /= len(self.central_synthetic_dataset)
+            corrects /= len(self.central_synthetic_dataset)
+            logger.info(
+                f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Clf Loss: {clf_losses:.4f} | Acc.: {corrects * 100:.4f}%'
+            )
         self.writer.add_scalar('Server Training Loss', clf_losses, 1)
         self.writer.add_scalar('Server Training Acc1', corrects, 1)
         

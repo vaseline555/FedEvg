@@ -1,4 +1,3 @@
-import copy
 import torch
 import logging
 
@@ -14,10 +13,13 @@ class FedevgClient(FedavgClient):
         super(FedevgClient, self).__init__(**kwargs)
         self.inputs_synth = None
         self.targets_synth = None
+        self.classifier = None
 
         self.sigma = 0.01
-        self.alpha = 1.
-        self.ld_steps = 20
+        self.alpha = 1
+        self.ld_steps = 10
+        self.threshold = 3.
+        self.mcmc = 'ULD'
 
     @torch.enable_grad()
     def energy_gradient(self, x, y):
@@ -36,41 +38,55 @@ class FedevgClient(FedavgClient):
         self.model.train()
         return x_grad.detach(), x_energy.detach()
 
-    def langevine_dynamics_step(self, x_old, y, thres=3.):
+    def langevine_dynamics_step(self, x_old, y):
         energy_grad, _ = self.energy_gradient(x_old, y)
-        if thres is not None:
-            energy_grad = torch.clip(energy_grad, -thres, thres)
+        if self.threshold is not None:
+            energy_grad = torch.clip(energy_grad, -self.threshold, self.threshold)
         epsilon = torch.randn_like(energy_grad)
         x_new = x_old - self.alpha * energy_grad + epsilon * self.sigma
         return x_new
 
-    def sample(self, num_samples, device):
-        # radnomly sample from buffer
-        y = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
-        idx = torch.randint(0, len(self.inputs_synth) // self.args.num_classes, (num_samples,))
-        aug_idx = y.cpu() * (len(self.inputs_synth) // self.args.num_classes) + idx
+    def sample(self, num_samples, device, buffer_only=False):
+        if (torch.rand(1).item() < 0.95) or buffer_only:
+            # radnomly sample from buffer or random samples
+            y = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
+            idx = torch.randint(0, self.args.spc, (num_samples,))
+            aug_idx = y.cpu() * self.args.spc + idx
 
-        # initialize persistent samples
-        x_ebm = self.inputs_synth[aug_idx].to(device)
-        y_ebm = self.targets_synth[aug_idx].to(device)
+            # initialize persistent samples
+            x_ebm = self.inputs_synth[aug_idx].to(device)
+            y_ebm = self.targets_synth[aug_idx].to(device)
+        else:
+            """x_ebm, y_ebm = next(iter(self.train_loader))
+            if len(x_ebm) > num_samples:
+                indices = torch.randperm(len(x_ebm))[:num_samples]
+                x_ebm, y_ebm = x_ebm[indices], y_ebm[indices]
+            x_ebm, y_ebm = x_ebm.to(device), y_ebm.to(device)"""
+            x_ebm = torch.randn(num_samples, self.args.in_channels, self.args.resize, self.args.resize).clip(0., 1.).to(device)
+            y_ebm = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
 
-        # MALA update
-        grad, energy_old = self.energy_gradient(x_ebm, y_ebm)
-        for _ in range(self.ld_steps):
-            x_proposal = x_ebm - self.alpha * grad + torch.randn_like(grad).mul(self.sigma)
+        if self.mcmc == 'ULD':
+            for _ in range(self.ld_steps):
+                x_ebm = x_ebm - self.alpha * self.energy_gradient(x_ebm, y_ebm)[0] + torch.randn_like(x_ebm).mul(self.sigma)
+        elif self.mcmc == 'MALD':
+            grad, energy_old = self.energy_gradient(x_ebm, y_ebm)
+            for _ in range(self.ld_steps):
+                x_proposal = x_ebm - self.alpha * grad + torch.randn_like(grad).mul(self.sigma)
 
-            grad_new, energy_new = self.energy_gradient(x_ebm, y_ebm)
+                grad_new, energy_new = self.energy_gradient(x_ebm, y_ebm)
 
-            log_xhat_given_x = -1.0 * ((x_proposal - x_ebm - self.alpha * grad) ** 2).sum() / (2 * self.alpha**2)
-            log_x_given_xhat = -1.0 * ((x_ebm - x_proposal - self.alpha * grad_new) ** 2).sum() / (2 * self.alpha**2)
-            log_alpha = energy_new - energy_old + log_x_given_xhat - log_xhat_given_x 
-            
-            # acceptance
-            accept_indices = torch.where(torch.log(torch.rand_like(log_alpha)) < log_alpha.detach(), 1, 0).cumsum(0).squeeze().sub(1).unique()
-            x_ebm[accept_indices] = x_proposal[accept_indices]
-            energy_old[accept_indices] = energy_new[accept_indices]
-            grad[accept_indices] = grad_new[accept_indices]
-        return x_ebm.clip(0., 1.), y_ebm
+                log_xhat_given_x = -1.0 * ((x_proposal - x_ebm - self.alpha * grad)**2).sum() / (2 * self.alpha**2)
+                log_x_given_xhat = -1.0 * ((x_ebm - x_proposal - self.alpha * grad_new)**2).sum() / (2 * self.alpha**2)
+                log_alpha = energy_new - energy_old + log_x_given_xhat - log_xhat_given_x 
+                
+                # acceptance
+                accept_indices = torch.where(torch.log(torch.rand_like(log_alpha)) < log_alpha.detach(), 1, 0).cumsum(0).squeeze().sub(1).unique()
+                x_ebm[accept_indices] = x_proposal[accept_indices]
+                energy_old[accept_indices] = energy_new[accept_indices]
+                grad[accept_indices] = grad_new[accept_indices]
+        else:
+            raise NotImplementedError(f'{self.mcmc} is not supported!')
+        return x_ebm.clip(0., 1.).detach(), y_ebm
 
     @torch.enable_grad()
     def update(self):
@@ -89,13 +105,15 @@ class FedevgClient(FedavgClient):
                 inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device)
 
                 outputs_ce = self.model(inputs_ce)
-                outputs_pcd = self.model(inputs_pcd.detach())
+                outputs_pcd = self.model(inputs_pcd)
+                ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(outputs_ce, targets_ce).mean(0) \
+                    + torch.nn.CrossEntropyLoss(reduction='none')(outputs_pcd, targets_pcd).mean(0).mul(0.1)
+
+                e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1))
+                e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1))
+                pcd_loss = (e_pos - e_neg).mean(0)
                 
-                e_pos = outputs_ce.gather(1, targets_ce.view(-1, 1))
-                e_neg = self.model(inputs_pcd.detach()).gather(1, targets_pcd.view(-1, 1))
-                pcd_loss = -(e_pos - e_neg).mean()
-                ce_loss = self.criterion(outputs_ce, targets_ce) + self.criterion(outputs_pcd, targets_pcd).mul(0.1)
-                loss = pcd_loss + ce_loss 
+                loss = (pcd_loss + ce_loss).sum()
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -109,10 +127,10 @@ class FedevgClient(FedavgClient):
                 # collect clf results
                 mm.track(
                     loss=[
-                        ce_loss.detach().cpu().item(), 
-                        pcd_loss.detach().cpu().item()
+                        ce_loss.mean().detach().cpu().item(), 
+                        pcd_loss.mean().detach().cpu().item()
                     ], 
-                    pred=inputs_pcd.detach().cpu().clip(0., 1.),
+                    pred=inputs_pcd.detach().cpu(),
                     true=inputs_ce.detach().cpu(), 
                     suffix=['ce', 'pcd'],
                     calc_fid=False
@@ -135,29 +153,29 @@ class FedevgClient(FedavgClient):
 
         for inputs_ce, targets_ce in self.test_loader:
             inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
-            inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device)
+            inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device, True)
 
             outputs_ce = self.model(inputs_ce)
             outputs_pcd = self.model(inputs_pcd.detach())
             
-            e_pos = outputs_ce.gather(1, targets_ce.view(-1, 1))
-            e_neg = self.model(inputs_pcd.detach()).gather(1, targets_pcd.view(-1, 1))
-            pcd_loss = -(e_pos - e_neg).mean()
-            ce_loss = self.criterion(outputs_ce, targets_ce) + self.criterion(outputs_pcd, targets_pcd).mul(0.1)
-            loss = pcd_loss + ce_loss 
+            e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1))
+            e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1))
+            pcd_loss = (e_pos - e_neg).mean(0)
+            ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(outputs_ce, targets_ce).mean(0) \
+                + torch.nn.CrossEntropyLoss(reduction='none', label_smoothing=0.3)(outputs_pcd, targets_pcd).mean(0).mul(0.1)
 
             # collect clf results
             mm.track(
                 loss=[
-                    ce_loss.detach().cpu().item(), 
-                    pcd_loss.detach().cpu().item()
+                    ce_loss.mean().detach().cpu().item(), 
+                    pcd_loss.mean().detach().cpu().item()
                 ], 
-                pred=inputs_pcd.detach().cpu().clip(0., 1.),
+                pred=inputs_pcd.detach().cpu(),
                 true=inputs_ce.detach().cpu(), 
                 suffix=['ce', 'pcd'],
                 calc_fid=False
             )
-            mm.track(loss.item(), outputs_ce.detach().cpu(), targets_ce.detach().cpu())
+            mm.track(ce_loss.mean().item(), outputs_ce.detach().cpu(), targets_ce.detach().cpu())
         else:
             self.model.to('cpu')
             mm.aggregate(len(self.test_set))
@@ -166,21 +184,22 @@ class FedevgClient(FedavgClient):
     @torch.no_grad()
     def evaluate_classifier(self):
         mm = MetricManager(self.args.eval_metrics)
-        self.model.eval()
-        self.model.to(self.args.device)
+        self.classifier.eval()
+        self.classifier.to(self.args.device)
 
         for inputs_ce, targets_ce in self.test_loader:
             inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
             
-            outputs = self.model(inputs_ce)
+            outputs = self.classifier(inputs_ce)
             loss = self.criterion(outputs, targets_ce)
 
             mm.track(loss.item(), outputs.detach().cpu(), targets_ce.detach().cpu())
         else:
-            self.model.to('cpu')
+            self.classifier.to('cpu')
             mm.aggregate(len(self.test_set))
         return mm.results
     
     def upload(self):
         energy_grad, energy = self.energy_gradient(self.inputs_synth.cpu(), self.targets_synth.cpu())
         return energy_grad, energy.sign().mul(-1).exp()
+    

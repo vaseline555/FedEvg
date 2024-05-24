@@ -38,14 +38,18 @@ class Discriminator(torch.nn.Module):
         proj_size = resize // 2**3
         self.features = torch.nn.Sequential(
             torch.nn.Conv2d(in_channels, hidden_size, 4, 2, 1, bias=False),
-            torch.nn.LeakyReLU(0.2, inplace=True),
+            torch.nn.LeakyReLU(0.2),
+            torch.nn.Dropout(0.5),
             torch.nn.Conv2d(hidden_size, hidden_size * 2, 4, 2, 1, bias=False),
             torch.nn.BatchNorm2d(hidden_size * 2),
-            torch.nn.LeakyReLU(0.2, inplace=True),
+            torch.nn.LeakyReLU(0.2),
+            torch.nn.Dropout(0.5),
             torch.nn.Conv2d(hidden_size * 2, hidden_size * 4, 4, 2, 1, bias=False),
             torch.nn.BatchNorm2d(hidden_size * 4),
-            torch.nn.LeakyReLU(0.2, inplace=True),
+            torch.nn.LeakyReLU(0.2),
+            torch.nn.Dropout(0.5),
             torch.nn.Conv2d(hidden_size * 4, hidden_size * 4, 4, 1, 0, bias=False),
+            torch.nn.Dropout(0.5),
             torch.nn.Flatten(),
             torch.nn.Linear(hidden_size * 4, 1 + num_classes)
         )

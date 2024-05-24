@@ -371,30 +371,31 @@ class FeddmServer(FedavgServer):
         self.global_model.to(self.args.device)
         self.global_model.train()
 
-        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.01, momentum=0.5)
-        clf_losses, corrects = 0, 0
-        for inputs, targets in aggregated_synthetic_dataloader:
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
-            outputs = self.global_model(inputs)
+        optimizer = torch.optim.Adam(self.global_model.parameters(), lr=0.001)
+        for e in range(self.args.E):
+            clf_losses, corrects = 0, 0
+            for inputs, targets in aggregated_synthetic_dataloader:
+                inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+                outputs = self.global_model(inputs)
 
-            # Calculate losses
-            clf_loss = torch.nn.__dict__[self.args.criterion]()(outputs, targets)
-            clf_losses += clf_loss.item()
-            corrects += outputs.argmax(1).eq(targets).sum().item()
+                # Calculate losses
+                clf_loss = torch.nn.__dict__[self.args.criterion]()(outputs, targets)
+                clf_losses += clf_loss.item()
+                corrects += outputs.argmax(1).eq(targets).sum().item()
 
-            optimizer.zero_grad()
-            clf_loss.backward()
-            optimizer.step()
-            
-            # collect clf results
-            mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
-        else:
-            mm.aggregate(len(self.server_dataset))
-            clf_losses /= len(self.server_dataset)
-            corrects /= len(self.server_dataset)
-            logger.info(
-                f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {clf_losses:.4f} Acc.: {corrects * 100:.2f}%'
-            )
+                optimizer.zero_grad()
+                clf_loss.backward()
+                optimizer.step()
+                
+                # collect clf results
+                mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+            else:
+                mm.aggregate(len(self.server_dataset))
+                clf_losses /= len(self.server_dataset)
+                corrects /= len(self.server_dataset)
+                logger.info(
+                    f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {clf_losses:.4f} Acc.: {corrects * 100:.2f}%'
+                )
         self.global_model.to('cpu')
 
         self.writer.add_scalar('Server Training Loss', clf_losses, self.round)

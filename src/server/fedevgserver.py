@@ -1,3 +1,5 @@
+import os
+import copy
 import torch
 import logging
 import concurrent.futures
@@ -34,13 +36,19 @@ def cosine_beta_schedule(eta_start=10., eta_end=0., timesteps=100, s=0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return betas * (eta_end - eta_start) + eta_start
 
+def add_sn(m):    
+    if isinstance(m, torch.nn.Linear):
+        return torch.nn.utils.spectral_norm(m)
+    else:
+        return m
+
 class FedevgServer(FedavgServer):
     def __init__(self, **kwargs):
         super(FedevgServer, self).__init__(**kwargs)
         self.results['model_parameter_counts'] = sum(p.numel() for p in self.global_model.parameters()) 
         self.inputs_synth = torch.randn(self.args.num_classes * self.args.spc, self.args.in_channels, self.args.resize, self.args.resize)
         self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
-        self.server_lr_schedule = quadratic_beta_schedule(self.args.server_lr, self.args.server_lr * .1, self.args.R)
+        self.server_lr_schedule = cosine_beta_schedule(self.args.server_lr, 1, self.args.R)
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
         losses, losses_ce, losses_pcd, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
@@ -57,12 +65,12 @@ class FedevgServer(FedavgServer):
                 # loss cross-entropy
                 loss_ce = result['loss_ce']
                 client_log_string += f'| loss (ce): {loss_ce:.4f} '
-                losses_pcd.append(loss_ce)
+                losses_ce.append(loss_ce)
 
                 # loss persistent contrastive divergence
                 loss_pcd = result['loss_pcd']
                 client_log_string += f'| loss (pcd): {loss_pcd:.4f} '
-                losses_ce.append(loss_pcd)
+                losses_pcd.append(loss_pcd)
 
                 # collect generated samples
                 gen_img = result['generated'].unsqueeze(0)
@@ -81,12 +89,12 @@ class FedevgServer(FedavgServer):
                 # loss cross-entropy
                 loss_ce = result[self.args.E]['loss_ce']
                 client_log_string += f'| loss (ce): {loss_ce:.4f} '
-                losses_pcd.append(loss_ce)
+                losses_ce.append(loss_ce)
 
                 # loss persistent contrastive divergence
                 loss_pcd = result[self.args.E]['loss_pcd']
                 client_log_string += f'| loss (pcd): {loss_pcd:.4f} '
-                losses_ce.append(loss_pcd)
+                losses_pcd.append(loss_pcd)
 
                 # collect generated samples
                 gen_img = result[self.args.E]['generated'].unsqueeze(0)
@@ -179,6 +187,7 @@ class FedevgServer(FedavgServer):
         def __update_clients(client):
             if client.model is None:
                 client.download(self.global_model)
+                client.model.apply(add_sn)
             client.inputs_synth = self.inputs_synth.clone()
             client.targets_synth = self.targets_synth.clone()
             client.args.lr = self.curr_lr
@@ -187,6 +196,7 @@ class FedevgServer(FedavgServer):
 
         def __evaluate_clients(client, participated):
             if client.model is None:
+                assert not participated
                 client.download(self.global_model)
             client.inputs_synth = self.inputs_synth.clone()
             client.targets_synth = self.targets_synth.clone()
@@ -255,6 +265,8 @@ class FedevgServer(FedavgServer):
         e, g = [], []
         for identifier in ids:
             energy_grad, exp_energy_signed = self.clients[identifier].upload()
+            self.clients[identifier].model = None
+
             e.append(exp_energy_signed.mul(coefficients[identifier]))
             g.append(energy_grad)
         else:
@@ -273,6 +285,24 @@ class FedevgServer(FedavgServer):
     
     @torch.no_grad()
     def _central_evaluate(self):
+        # plot and save generated images
+        gen_imgs = self.inputs_synth.detach().cpu().numpy()
+        if len(gen_imgs) > 1:
+            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
+        self.writer.add_image(
+            'Server Generated Test Image', 
+            gen_imgs, 
+            self.round // self.args.eval_every,
+            dataformats='HWC'
+        )
+        np.savez(
+            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
+            inputs=self.inputs_synth.detach().cpu().numpy(),
+            targets=self.targets_synth.detach().cpu().numpy()
+        )
+
         # wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
@@ -310,6 +340,7 @@ class FedevgServer(FedavgServer):
                 logger.info(
                     f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {clf_losses:.4f} Acc.: {corrects * 100:.2f}%'
                 )
+            self.global_model.eval()
             self.global_model.to('cpu')
 
         self.writer.add_scalar('Server Training Loss', clf_losses, self.round)
@@ -373,24 +404,6 @@ class FedevgServer(FedavgServer):
         self.writer.add_scalar('Server Test Loss', clf_losses, self.round // self.args.eval_every)
         self.writer.add_scalar('Server Test Acc1', corrects, self.round // self.args.eval_every)
 
-        # plot and save generated images
-        gen_imgs = self.inputs_synth.detach().cpu().numpy()
-        if len(gen_imgs) > 1:
-            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
-        self.writer.add_image(
-            'Server Generated Image', 
-            gen_imgs, 
-            self.round // self.args.eval_every,
-            dataformats='HWC'
-        )
-        np.savez(
-            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
-            inputs=self.inputs_synth.detach().cpu().numpy(),
-            targets=self.targets_synth.detach().cpu().numpy()
-        )
-
         # log TensorBoard
         self.writer.add_scalar(f'Server Test Fid', mm.results['metrics']['fid'], self.round // self.args.eval_every)
         self.writer.flush()
@@ -401,13 +414,13 @@ class FedevgServer(FedavgServer):
         self.results[self.round]['server_evaluated'] = result
 
         # (local) evaluate the server model
-        self._request_with_model(self.global_model)
+        self._request_with_model()
 
-    def _request_with_model(self, model):
+    def _request_with_model(self):
         def __evaluate_clients(client):
-            client.download(model)
+            client.classifier = copy.deepcopy(self.global_model)
             eval_result = client.evaluate_classifier() 
-            client.model = None
+            client.classifier = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request losses to all clients!')
@@ -502,4 +515,61 @@ class FedevgServer(FedavgServer):
         self.inputs_synth = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
+
+        # wrap into dataloader
+        aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
+            batch_size=1,
+            shuffle=True
+        )
+
+        # plot and save generated images
+        gen_imgs = self.inputs_synth.detach().cpu().numpy()
+        if len(gen_imgs) > 1:
+            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
+            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
+        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
+        self.writer.add_image(
+            'Server Generated Training Image', 
+            gen_imgs, 
+            self.round,
+            dataformats='HWC'
+        )
+
+        # train server model
+        mm = MetricManager(self.args.eval_metrics)
+        self.global_model.to(self.args.device)
+        self.global_model.train()
+
+        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.01, weight_decay=0.01)
+        clf_losses, corrects = 0, 0
+        for inputs, targets in aggregated_synthetic_dataloader:
+            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            outputs = self.global_model(inputs)
+
+            # Calculate losses
+            clf_loss = torch.nn.__dict__[self.args.criterion]()(outputs, targets)
+            clf_losses += clf_loss.item()
+            corrects += outputs.argmax(1).eq(targets).sum().item()
+
+            optimizer.zero_grad()
+            clf_loss.backward()
+            optimizer.step()
+            
+            # collect clf results
+            mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
+        else:
+            mm.aggregate(len(self.inputs_synth))
+            clf_losses /= len(self.inputs_synth)
+            corrects /= len(self.inputs_synth)
+            logger.info(
+                f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {clf_losses:.4f} Acc.: {corrects * 100:.2f}%'
+            )
+        self.global_model.to('cpu')
+
+        self.writer.add_scalar('Server Training Loss', clf_losses, self.round)
+        self.writer.add_scalar('Server Training Acc1', corrects, self.round)
+        self.results['server_training_loss'] = clf_losses
+        self.results['server_training_acc1'] = corrects
         return selected_ids
+        

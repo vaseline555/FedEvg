@@ -379,12 +379,13 @@ class MobileViTBlock(torch.nn.Module):
 # ResNet #
 ##########
 class ResidualBlock(torch.nn.Module):
-    def __init__(self, in_planes, planes, stride=1):
+    def __init__(self, in_planes, planes, stride=1, act=torch.nn.ReLU()):
         super(ResidualBlock, self).__init__()
+        self.act = act
         self.features = torch.nn.Sequential(
             torch.nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False),
             torch.nn.GroupNorm(planes // 2, planes),
-            torch.nn.ReLU(),
+            act,
             torch.nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             torch.nn.GroupNorm(planes // 2, planes)
         )
@@ -398,7 +399,7 @@ class ResidualBlock(torch.nn.Module):
 
     def forward(self, x):
         x = self.features(x) + self.shortcut(x) 
-        x = torch.nn.functional.relu(x)
+        #x = self.act(x)
         return x
 
 ################

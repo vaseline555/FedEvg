@@ -1,3 +1,4 @@
+import copy
 import torch
 import logging
 import concurrent.futures
@@ -309,14 +310,13 @@ class FedcganServer(FedavgServer):
         self.results[self.round]['server_evaluated'] = result
 
         # local evaluate classifier
-        self._request_with_model(self.classifier)
+        self._request_with_model()
 
-    def _request_with_model(self, model):
+    def _request_with_model(self):
         def __evaluate_clients(client):
-            if client.model is None:
-                client.download(model)
+            client.classifier = copy.deepcopy(self.classifier)
             eval_result = client.evaluate_classifier() 
-            client.model = None
+            client.classifier = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request losses to all clients!')

@@ -13,7 +13,8 @@ class FedcganClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedcganClient, self).__init__(**kwargs)
         self.gan_criterion = torch.nn.BCELoss()
-        
+        self.classifier = None
+
     @torch.enable_grad()
     def update(self):
         mm = MetricManager(self.args.eval_metrics)
@@ -173,17 +174,17 @@ class FedcganClient(FedavgClient):
     @torch.no_grad()
     def evaluate_classifier(self):
         mm = MetricManager(self.args.eval_metrics)
-        self.model.eval()
-        self.model.to(self.args.device)
+        self.classifier.eval()
+        self.classifier.to(self.args.device)
 
         for inputs, targets in self.test_loader:
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
             
-            outputs = self.model(inputs)
+            outputs = self.classifier(inputs)
             loss = torch.nn.CrossEntropyLoss()(outputs, targets)
 
             mm.track(loss.item(), outputs.detach().cpu(), targets.detach().cpu())
         else:
-            self.model.to('cpu')
+            self.classifier.to('cpu')
             mm.aggregate(len(self.test_set))
         return mm.results
