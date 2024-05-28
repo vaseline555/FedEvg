@@ -35,7 +35,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "CIFAR10_FedEvg_$s (K=100; diri=2)" --seed $s --device cuda:0 \
+        --exp_name "CIFAR10_FedEvg_$s (K=100; patho=2)" --seed $s --device cuda:0 \
         --dataset CIFAR10 \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
@@ -45,7 +45,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "SVHN_FedEvg_$s (K=100; diri=2)" --seed $s --device cuda:1 \
+        --exp_name "SVHN_FedEvg_$s (K=100; patho=2)" --seed $s --device cuda:1 \
         --dataset SVHN \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
@@ -55,7 +55,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "MNIST_FedEvg_$s (K=100; diri=2)" --seed $s --device cuda:2 \
+        --exp_name "MNIST_FedEvg_$s (K=100; patho=2)" --seed $s --device cuda:2 \
         --dataset MNIST \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
@@ -100,7 +100,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "CIFAR10_FedEvg_$s (K=10; diri=2)" --seed $s --device cuda:0 \
+        --exp_name "CIFAR10_FedEvg_$s (K=10; patho=2)" --seed $s --device cuda:0 \
         --dataset CIFAR10 \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
@@ -110,7 +110,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "SVHN_FedEvg_$s (K=10; diri=2)" --seed $s --device cuda:1 \
+        --exp_name "SVHN_FedEvg_$s (K=10; patho=2)" --seed $s --device cuda:1 \
         --dataset SVHN \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
@@ -120,7 +120,7 @@ do
         sleep 1
 
         python3 main.py \
-        --exp_name "MNIST_FedEvg_$s (K=10; diri=2)" --seed $s --device cuda:2 \
+        --exp_name "MNIST_FedEvg_$s (K=10; patho=2)" --seed $s --device cuda:2 \
         --dataset MNIST \
         --split_type patho --mincls 2 --test_size 0.2 --spc 10 --bpr 10 \
         --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
