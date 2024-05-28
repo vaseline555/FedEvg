@@ -188,7 +188,20 @@ if __name__ == "__main__":
     parser.add_argument('--mu', help='constant for proximity regularization term (valid only if the algorithm is `fedprox`)', type=float, choices=[Range(0., 1e6)], default=0)
     parser.add_argument('--tau', help='degree of adaptivity (valid only if the algorithm is one of [`fedadam`, `fedyogi`, `fedadagrad`])', type=float, choices=[Range(1e-5, 1e2)], default=1e-3)
     parser.add_argument('--server_lr', help='server learning rate', type=float, choices=[Range(0., float('inf'))], default=1)
-    parser.add_argument('--spc', help='sampels per classes', type=int, choices=[Range(1., float('inf'))], default=10)
+    parser.add_argument('--ce_lambda', help='coefficient of a synthetic data-driven cross-entropy loss', type=float, choices=[Range(0., float('inf'))], default=0.1)
+
+    ## MCMC settings
+    parser.add_argument('--sigma', help='local SGLD noise scale', type=float, choices=[Range(0., float('inf'))], default=0.01)
+    parser.add_argument('--alpha', help='local SGLD step size', type=float, choices=[Range(0., float('inf'))], default=1.)
+    parser.add_argument('--ld_steps', help='local SGLD noise scale', type=int, choices=[Range(0, float('inf'))], default=20)
+    parser.add_argument('--ld_threshold', help='local SGLD noise scale', type=float, choices=[Range(0., float('inf'))], default=None)
+    parser.add_argument('--mcmc', help='local mcmc method', type=str, choices=['ula', 'mala'], default='ula')
+    parser.add_argument('--cd_init', help='local mcmc initial proposal', type=str, choices=['noise', 'cd', 'pcd'], default='pcd')
+    parser.add_argument('--server_beta', help='server SGLD step size', type=float, choices=[Range(0., float('inf'))], default=100.)
+    parser.add_argument('--server_beta_last', help='server SGLD step size in the final round', type=float, choices=[Range(0., float('inf'))], default=1.)
+    parser.add_argument('--spc', help='samples per class of the buffer', type=int, choices=[Range(1, float('inf'))], default=50)
+    parser.add_argument('--bpr', help='buffer size per round', type=int, choices=[Range(1, float('inf'))], default=10)
+
 
     # parse arguments
     args = parser.parse_args()

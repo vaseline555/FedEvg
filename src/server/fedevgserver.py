@@ -38,19 +38,17 @@ def cosine_beta_schedule(eta_start=10., eta_end=0., timesteps=100, s=0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return betas * (eta_end - eta_start) + eta_start
 
-def add_sn(m):    
-    if isinstance(m, torch.nn.Linear):
-        return torch.nn.utils.spectral_norm(m)
-    else:
-        return m
-
 class FedevgServer(FedavgServer):
     def __init__(self, **kwargs):
         super(FedevgServer, self).__init__(**kwargs)
         self.results['model_parameter_counts'] = sum(p.numel() for p in self.global_model.parameters()) 
+        
+        # central buffer
         self.inputs_synth = torch.randn(self.args.num_classes * self.args.spc, self.args.in_channels, self.args.resize, self.args.resize)
         self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
-        self.server_lr_schedule = cosine_beta_schedule(self.args.server_lr, self.args.server_lr * 0.05, self.args.R)
+
+        # central SGLD configuration
+        self.server_beta_schedule = cosine_beta_schedule(self.args.server_beta, self.args.server_beta_last, self.args.R)
         self.selected_indices = None
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
@@ -190,17 +188,15 @@ class FedevgServer(FedavgServer):
         def __update_clients(client):
             if client.model is None:
                 client.download(self.global_model)
-                client.model.apply(add_sn)
             
-            """labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * 5,))
-            indices = torch.randint(0, self.args.spc, (self.args.num_classes * 5,))
+            # sample from central buffer
+            labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
+            indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
             self.selected_indices = labels * self.args.spc + indices
 
+            # broadcast buffer
             client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
             client.targets_synth = self.targets_synth[self.selected_indices].clone()
-"""
-            #client.inputs_synth = self.inputs_synth.clone()
-            #client.targets_synth = self.targets_synth.clone()
 
             client.args.lr = self.curr_lr
             update_result = client.update()
@@ -210,14 +206,13 @@ class FedevgServer(FedavgServer):
             if client.model is None:
                 assert not participated
                 client.download(self.global_model)
-            """if client.inputs_synth is None:
                 client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
-                client.targets_synth = self.targets_synth[self.selected_indices].clone()"""
+                client.targets_synth = self.targets_synth[self.selected_indices].clone()
             eval_result = client.evaluate() 
             if not participated:
                 client.model = None
-                #client.inputs_synth = None
-                #client.targets_synth = None
+                client.inputs_synth = None
+                client.targets_synth = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request {"updates" if not eval else "losses"} to {"all" if ids is None else len(ids)} clients!')
@@ -281,6 +276,8 @@ class FedevgServer(FedavgServer):
         for identifier in ids:
             energy_grad, exp_energy_signed = self.clients[identifier].upload()
             self.clients[identifier].model = None
+            self.clients[identifier].inputs_synth = None
+            self.clients[identifier].targets_synth = None
 
             e.append(exp_energy_signed.mul(coefficients[identifier]))
             g.append(energy_grad)
@@ -293,10 +290,10 @@ class FedevgServer(FedavgServer):
 
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth = self.inputs_synth[self.selected_indices].clone()
-        inputs_synth = inputs_synth - self.server_lr_schedule[self.round] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
+        inputs_synth_curr = self.inputs_synth[self.selected_indices].clone()
+        inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
-        return inputs_synth.clip(0., 1.)
+        return inputs_synth_new.clip(0., 1.)
     
     @torch.no_grad()
     def _central_evaluate(self):
@@ -430,8 +427,13 @@ class FedevgServer(FedavgServer):
     def _request_with_model(self):
         def __evaluate_clients(client):
             client.classifier = copy.deepcopy(self.global_model)
+            client.inputs_synth = self.inputs_synth.clone()
+            client.targets_synth = self.targets_synth.clone()
+
             eval_result = client.evaluate_classifier() 
             client.classifier = None
+            client.inputs_synth = None
+            client.targets_synth = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request losses to all clients!')
@@ -534,7 +536,7 @@ class FedevgServer(FedavgServer):
             self.round
         )
 
-        # wrap into dataloader
+        """# wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
             batch_size=1,
@@ -575,6 +577,6 @@ class FedevgServer(FedavgServer):
         self.writer.add_scalar('Server Training Loss', clf_losses, self.round)
         self.writer.add_scalar('Server Training Acc1', corrects, self.round)
         self.results['server_training_loss'] = clf_losses
-        self.results['server_training_acc1'] = corrects
+        self.results['server_training_acc1'] = corrects"""
         return selected_ids
         
