@@ -170,7 +170,7 @@ class FedcganServer(FedavgServer):
         self.global_model.to(self.args.device)
         self.global_model.eval()
         with torch.no_grad():
-            targets_synth = torch.randint(self.args.num_classes, (num_samples,)).long().to(self.args.device)
+            targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1).to(self.args.device)
             noise = torch.rand(num_samples, self.args.hidden_size * 2, 1, 1).sub(0.5).div(0.5).to(self.args.device)
             noise = torch.cat([
                 noise, 

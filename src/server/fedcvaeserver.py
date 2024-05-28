@@ -172,22 +172,18 @@ class FedcvaeServer(FedavgServer):
         self.classifier.eval()
 
         clf_losses, corrects = 0, 0
-        for (synth, _, _), (inputs, targets) in zip(
-                torch.utils.data.DataLoader(
-                    torch.utils.data.dataset.TensorDataset(
-                        self.inputs_synth,
-                        self.latents_synth,
-                        self.targets_synth
-                    ),
-                    batch_size=self.args.B,
-                    shuffle=True
-                ), 
-                torch.utils.data.DataLoader(
-                    dataset=self.server_dataset, 
-                    batch_size=self.args.B, 
-                    shuffle=False
-                )
-            ):
+        for (synth, _), (inputs, targets) in zip(
+            torch.utils.data.DataLoader(
+                self.central_synthetic_dataset,
+                batch_size=self.args.B,
+                shuffle=False
+            ), 
+            torch.utils.data.DataLoader(
+                dataset=self.server_dataset, 
+                batch_size=self.args.B, 
+                shuffle=False
+            )
+        ):
             # real image and label
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
             logits = self.classifier(inputs)
@@ -222,22 +218,6 @@ class FedcvaeServer(FedavgServer):
         
         self.writer.add_scalar('Server Test Loss', clf_losses, 1)
         self.writer.add_scalar('Server Test Acc1', corrects, 1)
-
-        # log generated images    
-        targets_synth, sorted_indices = torch.sort(self.targets_synth.detach(), 0)
-        inputs_synth = self.inputs_synth[sorted_indices].detach()
-        self.writer.add_image(
-            'Server Generated Test Image', 
-            torchvision.utils.make_grid(inputs_synth, nrow=self.args.spc), 
-            self.round // self.args.eval_every
-        )
-
-        # save server-side synthetic dataset
-        np.savez(
-            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
-            inputs=inputs_synth.numpy(),
-            targets=targets_synth.numpy().astype(int)
-        )
 
         # log TensorBoard
         self.writer.add_scalar(f'Server Test Fid', mm.results['metrics']['fid'], self.round // self.args.eval_every)
@@ -429,7 +409,7 @@ class FedcvaeServer(FedavgServer):
         # generate from the trained server decoder
         n_samples = self.num_train_samples
         latents = torch.cat(latents_synth).to(self.args.device) #torch.randn(n_samples, 100).to(self.args.device)
-        targets = torch.arange(self.args.num_classes).repeat(n_samples // self.args.num_classes)
+        targets = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
         targets_hot = torch.nn.functional.one_hot(targets, self.args.num_classes).to(self.args.device)
 
         self.decoder.eval()
@@ -437,6 +417,20 @@ class FedcvaeServer(FedavgServer):
             inputs = self.decoder(torch.cat([latents, targets_hot], dim=1)).cpu()
         self.central_synthetic_dataset = torch.utils.data.TensorDataset(inputs, targets.cpu())
         self.decoder.to('cpu')
+
+        # log generated images
+        self.writer.add_image(
+            'Server Generated Test Image', 
+            torchvision.utils.make_grid(inputs, nrow=self.args.spc), 
+            self.round // self.args.eval_every
+        )
+
+        # save server-side synthetic dataset
+        np.savez(
+            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
+            inputs=inputs_synth.numpy(),
+            targets=targets_synth.numpy().astype(int)
+        )
 
         # wrap into dataloader
         central_synthetic_dataloader = torch.utils.data.DataLoader(
