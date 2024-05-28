@@ -293,23 +293,6 @@ def check_args(args):
         print('')
     return args
 
-#####################
-# BCEWithLogitsLoss #
-#####################
-class PainlessBCEWithLogitsLoss(torch.nn.BCEWithLogitsLoss):
-    """Native `torch.nn.BCEWithLogitsLoss` requires squeezed logits shape and targets with float dtype.
-    """
-    def __init__(self, **kwargs):
-        super(PainlessBCEWithLogitsLoss, self).__init__(**kwargs)
-
-    def forward(self, inputs, targets):
-        return torch.nn.functional.binary_cross_entropy_with_logits(
-            torch.atleast_1d(inputs.squeeze()), 
-            torch.atleast_1d(targets).float()
-        )
-
-torch.nn.BCEWithLogitsLoss = PainlessBCEWithLogitsLoss
-
 ################
 # Seq2Seq Loss #
 ################

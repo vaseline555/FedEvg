@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class FedcganClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedcganClient, self).__init__(**kwargs)
-        self.gan_criterion = torch.nn.BCELoss()
+        self.gan_criterion = torch.nn.BCEWithLogitsLoss()
         self.classifier = None
 
     @torch.enable_grad()
@@ -33,11 +33,11 @@ class FedcganClient(FedavgClient):
         for e in range(self.args.E):
             for inputs, targets in self.train_loader:
                 # real image and label
-                inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+                inputs, targets = inputs.sub(0.5).div(0.5).to(self.args.device), targets.to(self.args.device)
 
                 # fake image and label
                 fake_label = torch.randint(self.args.num_classes, (inputs.size(0),)).long().to(self.args.device)
-                noise = torch.randn(inputs.size(0), self.args.hidden_size * 2, 1, 1).to(self.args.device)
+                noise = torch.rand(inputs.size(0), self.args.hidden_size * 2, 1, 1).sub(0.5).div(0.5).to(self.args.device)
                 noise = torch.cat([
                     noise, 
                     torch.eye(self.args.num_classes).to(self.args.device)[
@@ -118,11 +118,11 @@ class FedcganClient(FedavgClient):
 
         for inputs, targets in self.test_loader:
             # real image and label
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            inputs, targets = inputs.sub(0.5).div(0.5).to(self.args.device), targets.to(self.args.device)
 
             # fake image and label
             fake_label = torch.randint(self.args.num_classes, (inputs.size(0),)).long().to(self.args.device)
-            noise = torch.randn(inputs.size(0), self.args.hidden_size * 2, 1, 1).to(self.args.device)
+            noise = torch.rand(inputs.size(0), self.args.hidden_size * 2, 1, 1).sub(0.5).div(0.5).to(self.args.device)
             noise = torch.cat([
                 noise, 
                 torch.eye(self.args.num_classes).to(self.args.device)[
@@ -141,10 +141,6 @@ class FedcganClient(FedavgClient):
             D_loss_fake = self.gan_criterion(disc_fake, torch.zeros_like(disc_fake))
             clf_loss_fake = self.criterion(clf_fake, torch.ones_like(targets).mul(fake_label).long())
 
-            ## total loss of D
-            D_loss = D_loss_real + D_loss_fake + clf_loss_real + clf_loss_fake
-
-
             # G
             disc_fake, clf_fake, generated = self.model(noise, inputs, for_D=False)
 
@@ -152,9 +148,7 @@ class FedcganClient(FedavgClient):
             G_loss_fake = self.gan_criterion(disc_fake, torch.ones_like(disc_fake))
             clf_loss_fake = self.criterion(clf_fake, targets)
 
-            ## total loss of D
-            G_loss = G_loss_fake + clf_loss_fake
-
+            # log
             mm.track(
                     loss=[
                         (D_loss_real + D_loss_fake).detach().cpu().item(), 
@@ -178,7 +172,7 @@ class FedcganClient(FedavgClient):
         self.classifier.to(self.args.device)
 
         for inputs, targets in self.test_loader:
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            inputs, targets = inputs.sub(0.5).div(0.5).to(self.args.device), targets.to(self.args.device)
             
             outputs = self.classifier(inputs)
             loss = torch.nn.CrossEntropyLoss()(outputs, targets)

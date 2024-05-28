@@ -57,7 +57,7 @@ class Discriminator(torch.nn.Module):
     def forward(self, x):
         x = self.features(x)
         gen_disc, cls_disc = x[:, :1], x[:, 1:]
-        return torch.sigmoid(gen_disc), cls_disc
+        return gen_disc, cls_disc
 
 class ACGAN(torch.nn.Module):
     def __init__(self, resize, in_channels, hidden_size, num_classes):
@@ -69,7 +69,7 @@ class ACGAN(torch.nn.Module):
         x_fake = self.generator(noise)
         if for_D:
             disc_res, clf_res = self.discriminator(
-                torch.cat([x_fake.detach(), real.mul(2).sub(1)], dim=0)
+                torch.cat([x_fake.detach(), real], dim=0)
             )
             disc_fake, disc_real = disc_res[:x_fake.size(0)], disc_res[x_fake.size(0):]
             clf_fake, clf_real = clf_res[:x_fake.size(0)], clf_res[x_fake.size(0):]

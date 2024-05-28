@@ -1,6 +1,7 @@
 import copy
 import torch
 import logging
+import torchvision
 import concurrent.futures
 import numpy as np
 
@@ -158,9 +159,11 @@ class FedcganServer(FedavgServer):
     @torch.no_grad()
     def _central_evaluate(self):
         mm = MetricManager(self.args.eval_metrics)
-        gan_criterion = torch.nn.BCELoss()
-        
-        # Generate server-side synthetic samples
+
+        #######################
+        # 1. Generate Samples #
+        #######################
+        # generate server-side synthetic samples
         num_samples = self.args.num_classes * self.args.spc
         inputs_synth, targets_synth = [], []
         
@@ -168,7 +171,7 @@ class FedcganServer(FedavgServer):
         self.global_model.eval()
         with torch.no_grad():
             targets_synth = torch.randint(self.args.num_classes, (num_samples,)).long().to(self.args.device)
-            noise = torch.randn(num_samples, self.args.hidden_size * 2, 1, 1).to(self.args.device)
+            noise = torch.rand(num_samples, self.args.hidden_size * 2, 1, 1).sub(0.5).div(0.5).to(self.args.device)
             noise = torch.cat([
                 noise, 
                 torch.eye(self.args.num_classes).to(self.args.device)[
@@ -177,8 +180,28 @@ class FedcganServer(FedavgServer):
             ], dim=1)
             inputs_synth = self.global_model.generator(noise)
         self.global_model.to('cpu')
+        
+        # log generated images    
+        targets_synth, sorted_indices = torch.sort(targets_synth.detach().cpu(), 0)
+        inputs_synth = inputs_synth[sorted_indices].detach().cpu()
 
-        # Train server-side classifier
+        self.writer.add_image(
+            'Server Generated Test Image', 
+            torchvision.utils.make_grid(inputs_synth, nrow=self.args.spc), 
+            self.round // self.args.eval_every
+        )
+
+        # save server-side synthetic dataset
+        np.savez(
+            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
+            inputs=inputs_synth.mul(0.5).add(0.5).numpy(),
+            targets=targets_synth.numpy().astype(int)
+        )
+
+        #######################
+        # 2. Train Classifier #
+        #######################
+        # train server-side classifier
         self.classifier.to(self.args.device)
         self.classifier.train()
         with torch.enable_grad():
@@ -186,8 +209,8 @@ class FedcganServer(FedavgServer):
             clf_losses, corrects = 0, 0
             for (inputs, targets) in torch.utils.data.DataLoader(
                 torch.utils.data.TensorDataset(
-                        inputs_synth.cpu(), 
-                        targets_synth.cpu()
+                        inputs_synth, 
+                        targets_synth
                     ),
                     batch_size=self.args.B,
                     shuffle=True
@@ -223,17 +246,17 @@ class FedcganServer(FedavgServer):
         self.writer.add_scalar('Server Training Loss', clf_losses, self.round // self.args.eval_every)
         self.writer.add_scalar('Server Training Acc1', corrects * 100, self.round // self.args.eval_every)
 
-        # Evaluate server-side classifier
+        ##########################
+        # 3. Evaluate Classifier #
+        ##########################
+        # evaluate server-side classifier
         mm = MetricManager(self.args.eval_metrics)
         self.classifier.to(self.args.device)
         self.classifier.eval()
         clf_losses, corrects = 0, 0
         for (synth, _), (inputs, targets) in zip(
             torch.utils.data.DataLoader(
-                torch.utils.data.TensorDataset(
-                    inputs_synth.detach().cpu(), 
-                    targets_synth.detach().cpu()
-                ),
+                torch.utils.data.TensorDataset(inputs_synth, targets_synth),
                 batch_size=self.args.B,
                 shuffle=False
             ), 
@@ -243,7 +266,7 @@ class FedcganServer(FedavgServer):
                 shuffle=False
             )
         ):
-            inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
+            inputs, targets = inputs.sub(0.5).div(0.5).to(self.args.device), targets.to(self.args.device)
             outputs = self.classifier(inputs)
 
             # Calculate losses
@@ -254,8 +277,8 @@ class FedcganServer(FedavgServer):
             # collect for fid
             mm.track(
                 loss=[torch.ones(1).mul(-1).item(), torch.ones(1).mul(-1).item()], 
-                pred=synth.cpu(),
-                true=inputs.cpu(), 
+                pred=synth.mul(0.5).add(0.5).cpu(),
+                true=inputs.mul(0.5).add(0.5).cpu(), 
                 suffix=['none', 'none'],
                 calc_fid=True
             )
@@ -270,7 +293,6 @@ class FedcganServer(FedavgServer):
 
         # log result
         result = mm.results
-        generated = result['generated'].clone()
         del result['generated']
         server_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [SERVER] '
 
@@ -278,29 +300,6 @@ class FedcganServer(FedavgServer):
         server_log_string += f'| clf loss: {clf_losses:.4f} | accuracy: {corrects * 100:.2f}%'
         logger.info(server_log_string)
         
-        # generated images
-        gen_imgs = synth.detach().cpu().numpy()
-        if len(gen_imgs) > 1:
-            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
-        
-        self.writer.add_image(
-            'Server Generated Image', 
-            gen_imgs, 
-            self.round // self.args.eval_every,
-            dataformats='HWC'
-        )
-
-        # save server-side synthetic dataset
-        inputs_synth = inputs_synth.detach().cpu().mul(0.5).add(0.5).mul(255).numpy().astype(np.uint8)
-        targets_synth = targets_synth.detach().cpu().numpy().astype(int)
-        np.savez(
-            f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
-            inputs=inputs_synth,
-            targets=targets_synth
-        )
-
         # log TensorBoard
         self.writer.add_scalar('Server Test Loss', clf_losses, self.round // self.args.eval_every)
         for name, value in result['metrics'].items():

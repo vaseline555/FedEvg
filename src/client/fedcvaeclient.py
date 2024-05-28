@@ -50,9 +50,7 @@ class FedcvaeClient(FedavgClient):
                 inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
 
                 # one-hot encode label
-                targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
-                    targets
-                ].view(-1, self.args.num_classes)
+                targets_hot = torch.nn.functional.one_hot(targets, self.args.num_classes) 
                 
                 # inference
                 generated, mu, std = self.model(inputs, targets_hot)
@@ -104,9 +102,7 @@ class FedcvaeClient(FedavgClient):
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
 
             # one-hot encode label
-            targets_hot = torch.eye(self.args.num_classes).to(self.args.device)[
-                targets
-            ].view(-1, self.args.num_classes)
+            targets_hot = torch.nn.functional.one_hot(targets, self.args.num_classes)
             
             # inference
             generated, mu, std = self.model(inputs, targets_hot)
