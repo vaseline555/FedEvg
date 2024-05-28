@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 class FedevgClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedevgClient, self).__init__(**kwargs)
-        self.inputs_synth = None
-        self.targets_synth = None
+        self.inputs_synth = torch.randn(self.args.num_classes * self.args.spc, self.args.in_channels, self.args.resize, self.args.resize)
+        self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
         self.classifier = None
 
         self.sigma = 0.01
@@ -47,11 +47,11 @@ class FedevgClient(FedavgClient):
         return x_new
 
     def sample(self, num_samples, device, buffer_only=False):
-        if (torch.rand(1).item() < 0.95) or buffer_only:
+        if (torch.rand(1).item() < 1.) or buffer_only:
             # radnomly sample from buffer or random samples
             y = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
-            idx = torch.randint(0, self.args.spc, (num_samples,))
-            aug_idx = y.cpu() * self.args.spc + idx
+            idx = torch.randint(0, len(self.inputs_synth) // self.args.num_classes, (num_samples,))
+            aug_idx = y.cpu() * (len(self.inputs_synth) // self.args.num_classes) + idx
 
             # initialize persistent samples
             x_ebm = self.inputs_synth[aug_idx].to(device)
@@ -86,6 +86,9 @@ class FedevgClient(FedavgClient):
                 grad[accept_indices] = grad_new[accept_indices]
         else:
             raise NotImplementedError(f'{self.mcmc} is not supported!')
+        
+        # persistent state update
+        self.inputs_synth[aug_idx], self.targets_synth[aug_idx] = x_ebm.clone().detach().cpu(), y_ebm.detach().clone().cpu()
         return x_ebm.clip(0., 1.).detach(), y_ebm
 
     @torch.enable_grad()
@@ -102,18 +105,17 @@ class FedevgClient(FedavgClient):
         for e in range(self.args.E):
             for inputs_ce, targets_ce in self.train_loader:
                 inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
-                inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device)
+                inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device, True)
 
                 outputs_ce = self.model(inputs_ce)
                 outputs_pcd = self.model(inputs_pcd)
-                ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(outputs_ce, targets_ce).mean(0) \
-                    + torch.nn.CrossEntropyLoss(reduction='none')(outputs_pcd, targets_pcd).mean(0).mul(0.1)
+                ce_loss = self.criterion(outputs_ce, targets_ce) #+ self.criterion(outputs_pcd, targets_pcd).mul(0.1)
 
                 e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1))
                 e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1))
-                pcd_loss = (e_pos - e_neg).mean(0)
+                pcd_loss = (e_pos - e_neg).mean()
                 
-                loss = (pcd_loss + ce_loss).sum()
+                loss = pcd_loss + ce_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -127,8 +129,8 @@ class FedevgClient(FedavgClient):
                 # collect clf results
                 mm.track(
                     loss=[
-                        ce_loss.mean().detach().cpu().item(), 
-                        pcd_loss.mean().detach().cpu().item()
+                        ce_loss.detach().cpu().item(), 
+                        pcd_loss.detach().cpu().item()
                     ], 
                     pred=inputs_pcd.detach().cpu(),
                     true=inputs_ce.detach().cpu(), 
@@ -160,22 +162,21 @@ class FedevgClient(FedavgClient):
             
             e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1))
             e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1))
-            pcd_loss = (e_pos - e_neg).mean(0)
-            ce_loss = torch.nn.CrossEntropyLoss(reduction='none')(outputs_ce, targets_ce).mean(0) \
-                + torch.nn.CrossEntropyLoss(reduction='none', label_smoothing=0.3)(outputs_pcd, targets_pcd).mean(0).mul(0.1)
+            pcd_loss = (e_pos - e_neg).mean()
+            ce_loss = self.criterion(outputs_ce, targets_ce) #+ self.criterion(outputs_pcd, targets_pcd).mul(0.1)
 
             # collect clf results
             mm.track(
                 loss=[
-                    ce_loss.mean().detach().cpu().item(), 
-                    pcd_loss.mean().detach().cpu().item()
+                    ce_loss.detach().cpu().item(), 
+                    pcd_loss.detach().cpu().item()
                 ], 
                 pred=inputs_pcd.detach().cpu(),
                 true=inputs_ce.detach().cpu(), 
                 suffix=['ce', 'pcd'],
                 calc_fid=False
             )
-            mm.track(ce_loss.mean().item(), outputs_ce.detach().cpu(), targets_ce.detach().cpu())
+            mm.track(ce_loss.item(), outputs_ce.detach().cpu(), targets_ce.detach().cpu())
         else:
             self.model.to('cpu')
             mm.aggregate(len(self.test_set))

@@ -2,6 +2,7 @@ from .torchvisionparser import fetch_torchvision_dataset
 from .torchtextparser import fetch_torchtext_dataset
 from .leafparser import fetch_leaf
 from .flambyparser import fetch_flamby
+from .medmnistparser import fetch_medmnist
 from .tinyimagenet import fetch_tinyimagenet
 from .cinic10 import fetch_cinic10
 from .beerreviews import fetch_beerreviews

@@ -2,7 +2,9 @@ import os
 import copy
 import torch
 import logging
+import torchvision
 import concurrent.futures
+
 import numpy as np
 
 from PIL import Image
@@ -48,7 +50,8 @@ class FedevgServer(FedavgServer):
         self.results['model_parameter_counts'] = sum(p.numel() for p in self.global_model.parameters()) 
         self.inputs_synth = torch.randn(self.args.num_classes * self.args.spc, self.args.in_channels, self.args.resize, self.args.resize)
         self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
-        self.server_lr_schedule = cosine_beta_schedule(self.args.server_lr, 1, self.args.R)
+        self.server_lr_schedule = cosine_beta_schedule(self.args.server_lr, self.args.server_lr * 0.05, self.args.R)
+        self.selected_indices = None
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
         losses, losses_ce, losses_pcd, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
@@ -188,8 +191,17 @@ class FedevgServer(FedavgServer):
             if client.model is None:
                 client.download(self.global_model)
                 client.model.apply(add_sn)
-            client.inputs_synth = self.inputs_synth.clone()
-            client.targets_synth = self.targets_synth.clone()
+            
+            """labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * 5,))
+            indices = torch.randint(0, self.args.spc, (self.args.num_classes * 5,))
+            self.selected_indices = labels * self.args.spc + indices
+
+            client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
+            client.targets_synth = self.targets_synth[self.selected_indices].clone()
+"""
+            #client.inputs_synth = self.inputs_synth.clone()
+            #client.targets_synth = self.targets_synth.clone()
+
             client.args.lr = self.curr_lr
             update_result = client.update()
             return {client.id: len(client.training_set)}, {client.id: update_result}
@@ -198,11 +210,14 @@ class FedevgServer(FedavgServer):
             if client.model is None:
                 assert not participated
                 client.download(self.global_model)
-            client.inputs_synth = self.inputs_synth.clone()
-            client.targets_synth = self.targets_synth.clone()
+            """if client.inputs_synth is None:
+                client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
+                client.targets_synth = self.targets_synth[self.selected_indices].clone()"""
             eval_result = client.evaluate() 
             if not participated:
                 client.model = None
+                #client.inputs_synth = None
+                #client.targets_synth = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request {"updates" if not eval else "losses"} to {"all" if ids is None else len(ids)} clients!')
@@ -278,7 +293,7 @@ class FedevgServer(FedavgServer):
 
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth = self.inputs_synth.clone()
+        inputs_synth = self.inputs_synth[self.selected_indices].clone()
         inputs_synth = inputs_synth - self.server_lr_schedule[self.round] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
         return inputs_synth.clip(0., 1.)
@@ -286,17 +301,13 @@ class FedevgServer(FedavgServer):
     @torch.no_grad()
     def _central_evaluate(self):
         # plot and save generated images
-        gen_imgs = self.inputs_synth.detach().cpu().numpy()
-        if len(gen_imgs) > 1:
-            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
         self.writer.add_image(
             'Server Generated Test Image', 
-            gen_imgs, 
-            self.round // self.args.eval_every,
-            dataformats='HWC'
+            torchvision.utils.make_grid(self.inputs_synth.detach().cpu(), nrow=self.args.spc), 
+            self.round // self.args.eval_every
         )
+
+        # save images
         np.savez(
             f'{self.args.result_path}/server_generated_{str(self.round).zfill(4)}.npz', 
             inputs=self.inputs_synth.detach().cpu().numpy(),
@@ -512,9 +523,16 @@ class FedevgServer(FedavgServer):
         #################
         # Server Update #
         #################
-        self.inputs_synth = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
+        self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
+
+        # plot and save generated images
+        self.writer.add_image(
+            'Server Generated Training Image', 
+            torchvision.utils.make_grid(self.inputs_synth, nrow=self.args.spc), 
+            self.round
+        )
 
         # wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
@@ -523,25 +541,12 @@ class FedevgServer(FedavgServer):
             shuffle=True
         )
 
-        # plot and save generated images
-        gen_imgs = self.inputs_synth.detach().cpu().numpy()
-        if len(gen_imgs) > 1:
-            viz_idx = np.random.randint(0, len(gen_imgs), size=(), dtype=int)
-            gen_imgs = (gen_imgs[viz_idx] * 255).astype(np.uint8)
-        gen_imgs = np.transpose(gen_imgs, (1, 2, 0))
-        self.writer.add_image(
-            'Server Generated Training Image', 
-            gen_imgs, 
-            self.round,
-            dataformats='HWC'
-        )
-
         # train server model
         mm = MetricManager(self.args.eval_metrics)
         self.global_model.to(self.args.device)
         self.global_model.train()
 
-        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.01, weight_decay=0.01)
+        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.01, weight_decay=0.0001)
         clf_losses, corrects = 0, 0
         for inputs, targets in aggregated_synthetic_dataloader:
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)

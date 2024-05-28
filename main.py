@@ -80,6 +80,8 @@ if __name__ == "__main__":
     - text classification datasets in `torchtext.datasets`,
     - LEAF benchmark [ FEMNIST | Sent140 | Shakespeare | CelebA | Reddit ],
     - FLamby benchmark [ ISIC2019 | Heart | IXITiny ],
+    - MedMNIST benchmark [ PathMNIST | OCTMNIST | PneumoniaMNIST | ChestMNIST | DermaMNIST |
+        RetinaMNIST | BreastMNIST | BloodMNIST | TissueMNIST | OrganAMNIST | OrganCMNIST | OrganSMNIST ]
     - among [ TinyImageNet | CINIC10 | SpeechCommands | BeerReviewsA | BeerReviewsL | Adult | FFMNIST | Cover | GLEAM | Berka | MQP ]
     ''', type=str, required=True)
     parser.add_argument('--test_size', help='a fraction of local hold-out dataset for evaluation (-1 for assigning pre-defined test split as local holdout set)', type=float, choices=[Range(-1, 1.)], default=0.2)

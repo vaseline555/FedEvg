@@ -166,17 +166,27 @@ def load_dataset(args):
         _check_and_raise_error(args.split_type, 'pre', 'split scenario')
         transforms = [_get_transform(args, train=True), _get_transform(args, train=False)]
         raw_train, raw_test, args = fetch_torchvision_dataset(args=args, dataset_name=args.dataset, root=args.data_path, transforms=transforms)
-        
-    elif args.dataset in torchtext.datasets.__dict__.keys(): # 3) for downloadable datasets in `torchtext.datasets`...
-        _check_and_raise_error(args.split_type, 'pre', 'split scenario')
-        raw_train, raw_test, args = fetch_torchtext_dataset(args=args, dataset_name=args.dataset, root=args.data_path, seq_len=args.seq_len, tokenizer=tokenizer, num_embeddings=args.num_embeddings) 
-
+       
+    #elif args.dataset in torchtext.datasets.__dict__.keys(): # 3) for downloadable datasets in `torchtext.datasets`...
+    #    _check_and_raise_error(args.split_type, 'pre', 'split scenario')
+    #    raw_train, raw_test, args = fetch_torchtext_dataset(args=args, dataset_name=args.dataset, root=args.data_path, seq_len=args.seq_len, tokenizer=tokenizer, num_embeddings=args.num_embeddings) 
+    
     elif args.dataset in ['ISIC2019', 'Heart', 'TCGA-BRCA', 'IXITiny', 'Camelyon16', 'KITS2019', 'LIDC-IDRI']: # 4) for datasets in FLamby benchmark...
         _check_and_raise_error(args.split_type, 'pre', 'split scenario', False)
         _check_and_raise_error(args.eval_type, 'local', 'evaluation type', False)
         split_map, client_datasets, args = fetch_flamby(args=args, dataset_name=args.dataset, root=args.data_path) 
-        
-    elif args.dataset == 'TinyImageNet': # 5) for other public datasets...
+    
+    elif args.dataset in [
+        'PathMNIST', 'OCTMNIST', 'PneumoniaMNIST', 'ChestMNIST', 'DermaMNIST', 
+        'RetinaMNIST', 'BreastMNIST', 'BloodMNIST', 'TissueMNIST', 
+        'OrganAMNIST', 'OrganCMNIST', 'OrganSMNIST'
+    ]: # 5) for MedMNIST benchmark...
+        _check_and_raise_error(args.split_type, 'pre', 'split scenario')
+        _check_and_raise_error(args.resize, None, 'not specifying the `resize` argument')
+        transforms = [_get_transform(args, train=True), _get_transform(args, train=False)]
+        raw_train, raw_test, args = fetch_medmnist(args=args, dataset_name=args.dataset, root=args.data_path, transforms=transforms)
+
+    elif args.dataset == 'TinyImageNet': # 6) for other public datasets...
         _check_and_raise_error(args.split_type, 'pre', 'split scenario')
         transforms = [_get_transform(args, train=True), _get_transform(args, train=False)]
         raw_train, raw_test, args = fetch_tinyimagenet(args=args, root=args.data_path, transforms=transforms)
