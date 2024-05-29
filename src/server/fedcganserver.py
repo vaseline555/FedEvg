@@ -205,7 +205,7 @@ class FedcganServer(FedavgServer):
         self.classifier.to(self.args.device)
         self.classifier.train()
         with torch.enable_grad():
-            clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.001)
+            clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.01)
             clf_losses, corrects = 0, 0
             for (inputs, targets) in torch.utils.data.DataLoader(
                 torch.utils.data.TensorDataset(

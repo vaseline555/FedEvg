@@ -65,12 +65,12 @@ class FedevgClient(FedavgClient):
 
             x_ebm, y_ebm = x_ebm.to(device), y_ebm.to(device)
         elif self.args.cd_init == 'pcd':
-            y = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
-            idx = torch.randint(0, len(self.inputs_synth) // self.args.num_classes, (num_samples,))
-            aug_idx = y.cpu() * (len(self.inputs_synth) // self.args.num_classes) + idx
+            labels = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
+            indices = torch.randint(0, len(self.inputs_synth) // self.args.num_classes, (num_samples,))
+            selected_indices = labels.cpu() * (len(self.inputs_synth) // self.args.num_classes) + indices
 
-            x_ebm = self.inputs_synth[aug_idx].to(device)
-            y_ebm = self.targets_synth[aug_idx].to(device)
+            x_ebm = self.inputs_synth[selected_indices].to(device)
+            y_ebm = self.targets_synth[selected_indices].to(device)
 
         # MCMC sampling
         if self.args.mcmc == 'ula':

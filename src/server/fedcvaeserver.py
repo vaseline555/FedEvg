@@ -377,7 +377,7 @@ class FedcvaeServer(FedavgServer):
         # train server decoder
         self.decoder.to(self.args.device)
         self.decoder.train()
-        kd_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=0.01)
+        kd_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=0.001)
         for epoch in range(self.args.E):
             kd_losses = 0
             for inputs, latents, targets in torch.utils.data.DataLoader(
@@ -442,7 +442,7 @@ class FedcvaeServer(FedavgServer):
         # train server-side classifier
         self.classifier.to(self.args.device)
         self.classifier.train()
-        clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=self.args.lr)
+        clf_optimizer = torch.optim.Adam(self.classifier.parameters(), lr=0.001)
         for e in range(self.args.E):
             clf_losses, corrects = 0, 0
             for inputs, targets in central_synthetic_dataloader:
