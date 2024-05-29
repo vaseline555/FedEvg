@@ -190,13 +190,13 @@ class FedevgServer(FedavgServer):
                 client.download(self.global_model)
             
             # sample from central buffer
-            labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
-            indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
-            self.selected_indices = labels * self.args.spc + indices
+            #labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
+            #indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
+            #self.selected_indices = labels * self.args.spc + indices
 
             # broadcast buffer
-            client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
-            client.targets_synth = self.targets_synth[self.selected_indices].clone()
+            client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
+            client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
 
             client.args.lr = self.curr_lr
             update_result = client.update()
@@ -207,8 +207,8 @@ class FedevgServer(FedavgServer):
                 assert not participated
                 if client.model is None:
                     client.download(self.global_model)
-            client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
-            client.targets_synth = self.targets_synth[self.selected_indices].clone()
+            client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
+            client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
 
             eval_result = client.evaluate() 
             if not participated:
@@ -290,7 +290,7 @@ class FedevgServer(FedavgServer):
 
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth_curr = self.inputs_synth[self.selected_indices].clone()
+        inputs_synth_curr = self.inputs_synth.clone()#[self.selected_indices].clone()
         inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
         return inputs_synth_new.clip(0., 1.)
@@ -521,7 +521,8 @@ class FedevgServer(FedavgServer):
         #################
         # Server Update #
         #################
-        self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
+        #self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
+        self.inputs_synth = self._aggregate(selected_ids, updated_sizes)
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
 
