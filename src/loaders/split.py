@@ -37,8 +37,8 @@ def simulate_split(args, dataset):
         # split indices by number of clients
         split_indices = np.array_split(shuffled_indices, args.K)
             
-        # randomly remove some proportion (0% ~ 80%) of data
-        keep_ratio = np.random.uniform(low=0.1, high=1.0, size=len(split_indices))
+        # randomly remove some proportion (0% ~ kprt%) of data
+        keep_ratio = np.random.uniform(low=args.kprt, high=1.0, size=len(split_indices))
             
         # get adjusted indices
         split_indices = [indices[:int(len(indices) * ratio)] for indices, ratio in zip(split_indices, keep_ratio)]

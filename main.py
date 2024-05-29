@@ -106,6 +106,7 @@ if __name__ == "__main__":
     ''', type=str, choices=['iid', 'unbalanced', 'patho', 'diri', 'pre'], required=True)
     parser.add_argument('--mincls', help='the minimum number of distinct classes per client (valid only if `split_type` is `patho` or `diri`)', type=int, default=2)
     parser.add_argument('--cncntrtn', help='a concentration parameter for Dirichlet distribution (valid only if `split_type` is `diri`)', type=float, default=0.1)
+    parser.add_argument('--kprt', help='a concentration parameter for Dirichlet distribution (valid only if `split_type` is `unbalanced`)', type=float, choices=[Range(0., 1.)], default=0.1)
     
     ###################
     # Model arguments #
