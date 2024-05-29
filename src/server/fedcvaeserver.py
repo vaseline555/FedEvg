@@ -418,10 +418,14 @@ class FedcvaeServer(FedavgServer):
         self.central_synthetic_dataset = torch.utils.data.TensorDataset(inputs, targets.cpu())
         self.decoder.to('cpu')
 
+        # sort inputs by targets
+        targets_synth, sorted_indices = torch.sort(targets.detach().cpu(), 0)
+        inputs_synth = inputs[sorted_indices].detach().cpu()
+
         # log generated images
         self.writer.add_image(
             'Server Generated Test Image', 
-            torchvision.utils.make_grid(inputs, nrow=self.args.spc), 
+            torchvision.utils.make_grid(inputs_synth, nrow=self.args.spc), 
             self.round // self.args.eval_every
         )
 

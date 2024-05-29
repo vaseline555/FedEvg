@@ -188,6 +188,7 @@ class FedevgServer(FedavgServer):
         def __update_clients(client):
             if client.model is None:
                 client.download(self.global_model)
+                client.init_synth()
             
             # sample from central buffer
             #labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
@@ -195,8 +196,8 @@ class FedevgServer(FedavgServer):
             #self.selected_indices = labels * self.args.spc + indices
 
             # broadcast buffer
-            client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
-            client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
+            #client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
+            #client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
 
             client.args.lr = self.curr_lr
             update_result = client.update()
@@ -205,15 +206,17 @@ class FedevgServer(FedavgServer):
         def __evaluate_clients(client, participated):
             if client.model is None:
                 assert not participated
-                if client.model is None:
-                    client.download(self.global_model)
-            client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
-            client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
+                client.download(self.global_model)
+                client.init_synth()
+            #client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
+            #client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
 
             eval_result = client.evaluate() 
             if not participated:
+                client.model = None
                 client.inputs_synth = None
                 client.targets_synth = None
+
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request {"updates" if not eval else "losses"} to {"all" if ids is None else len(ids)} clients!')
@@ -276,6 +279,7 @@ class FedevgServer(FedavgServer):
         e, g = [], []
         for identifier in ids:
             energy_grad, exp_energy_signed = self.clients[identifier].upload()
+            self.clients[identifier].model = None
             self.clients[identifier].inputs_synth = None
             self.clients[identifier].targets_synth = None
 
@@ -533,7 +537,6 @@ class FedevgServer(FedavgServer):
             self.round
         )
 
-        """ # WHY?) stateful setting (cross-silo)
         # wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
@@ -546,7 +549,7 @@ class FedevgServer(FedavgServer):
         self.global_model.to(self.args.device)
         self.global_model.train()
 
-        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.001, momentum=0.9)
+        optimizer = torch.optim.SGD(self.global_model.parameters(), lr=0.01, momentum=0.9)
         clf_losses, corrects = 0, 0
         for inputs, targets in aggregated_synthetic_dataloader:
             inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
@@ -576,6 +579,5 @@ class FedevgServer(FedavgServer):
         self.writer.add_scalar('Server Training Acc1', corrects, self.round)
         self.results['server_training_loss'] = clf_losses
         self.results['server_training_acc1'] = corrects
-        """
         return selected_ids
         

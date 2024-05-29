@@ -22,6 +22,19 @@ class FedevgClient(FedavgClient):
         self.targets_synth = None
         self.classifier = None
 
+    def init_synth(self):
+        self.inputs_synth  = torch.randn(
+            self.args.num_classes * self.args.spc, 
+            self.args.in_channels, 
+            self.args.resize, 
+            self.args.resize
+        ).clip(0., 1.)
+        self.targets_synth = torch.randint(
+            0, 
+            self.args.num_classes, 
+            (self.args.num_classes * self.args.spc,)
+        )
+
     @torch.enable_grad()
     def energy_gradient(self, x, y):
         self.model.eval()
@@ -100,6 +113,9 @@ class FedevgClient(FedavgClient):
                 x_ebm[accept_indices] = x_proposal[accept_indices]
                 energy_old[accept_indices] = energy_new[accept_indices]
                 grad[accept_indices] = grad_new[accept_indices]
+        
+        if self.args.cd_init == 'pcd':
+            self.inputs_synth[selected_indices] = x_ebm.detach().cpu()
         return x_ebm.clip(0., 1.).detach(), y_ebm
 
     @torch.enable_grad()

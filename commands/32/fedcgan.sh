@@ -10,7 +10,7 @@ do
             --exp_name "CIFAR10_FedCGAN_$s (K=$k; patho=2)" --seed $s --device cuda:0 \
             --dataset CIFAR10 \
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
@@ -20,7 +20,7 @@ do
             --exp_name "CINIC10_FedCGAN_$s (K=$k; patho=2)" --seed $s --device cuda:1 \
             --dataset CINIC10 \
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
@@ -30,7 +30,7 @@ do
             --exp_name "MNIST_FedCGAN_$s (K=$k; patho=2)" --seed $s --device cuda:2 \
             --dataset MNIST \
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
@@ -40,7 +40,7 @@ do
             --exp_name "CIFAR10_FedCGAN_$s (K=$k; unbalanced=0.1)" --seed $s --device cuda:0 \
             --dataset CIFAR10 \
             --split_type unbalanced --kprt 0.1 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
@@ -50,7 +50,7 @@ do
             --exp_name "CINIC10_FedCGAN_$s (K=$k; unbalanced=0.1)" --seed $s --device cuda:1 \
             --dataset CINIC10 \
             --split_type unbalanced --kprt 0.1 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
@@ -60,7 +60,7 @@ do
             --exp_name "MNIST_FedCGAN_$s (K=$k; unbalanced=0.1)" --seed $s --device cuda:2 \
             --dataset MNIST \
             --split_type unbalanced --kprt 0.1 --test_size 0.2 --spc 10 \
-            --model_name ACGAN --hidden_size 64 --resize 32 \
+            --model_name ACGAN --hidden_size 64 --resize 32 --init_type normal --init_gain 0.02 \
             --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
             --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss
