@@ -37,14 +37,15 @@ def simulate_split(args, dataset):
         # split indices by number of clients
         split_indices = np.array_split(shuffled_indices, args.K)
             
-        # randomly remove some proportion (1% ~ 5%) of data
-        keep_ratio = np.random.uniform(low=0.95, high=0.99, size=len(split_indices))
+        # randomly remove some proportion (0% ~ 80%) of data
+        keep_ratio = np.random.uniform(low=0.1, high=1.0, size=len(split_indices))
             
         # get adjusted indices
         split_indices = [indices[:int(len(indices) * ratio)] for indices, ratio in zip(split_indices, keep_ratio)]
         
         # construct a hashmap
         split_map = {k: split_indices[k] for k in range(args.K)}
+        print([len(v) for v in split_map.values()])
         return split_map
     
     # Non-IID split proposed in (McMahan et al., 2016); each client has samples from at least two different classes
