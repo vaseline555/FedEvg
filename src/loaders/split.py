@@ -45,7 +45,6 @@ def simulate_split(args, dataset):
         
         # construct a hashmap
         split_map = {k: split_indices[k] for k in range(args.K)}
-        print([len(v) for v in split_map.values()])
         return split_map
     
     # Non-IID split proposed in (McMahan et al., 2016); each client has samples from at least two different classes

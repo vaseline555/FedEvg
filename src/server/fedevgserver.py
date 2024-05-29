@@ -207,8 +207,8 @@ class FedevgServer(FedavgServer):
                 assert not participated
                 if client.model is None:
                     client.download(self.global_model)
-                client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
-                client.targets_synth = self.targets_synth[self.selected_indices].clone()
+            client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
+            client.targets_synth = self.targets_synth[self.selected_indices].clone()
 
             eval_result = client.evaluate() 
             if not participated:
