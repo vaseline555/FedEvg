@@ -88,8 +88,8 @@ def simulate_split(args, dataset):
             try:
                 selected_classes = np.random.choice(args.num_classes, args.mincls, replace=False, p=selection_prob)
             except: # if shard size is not fit enough, some clients may inevitably have samples from classes less than the number of `mincls`
-                selected_classes = np.unique(np.random.choice(args.num_classes, args.mincls, replace=True, p=selection_prob))
-    
+                selected_classes = np.random.choice(args.num_classes, args.mincls, replace=True, p=selection_prob)
+            
             # assign shards in randomly selected classes to current client
             for it, class_idx in enumerate(selected_classes):
                 selected_shard_indices = np.random.choice(len(split_indices[class_idx]), 1)[0]

@@ -2,7 +2,7 @@
 
 for s in 1 2 3
 do
-    for k in 5 10 50
+    for k in 10 50
     do
         echo "Start (K=$k; seed=$s)...!"
         {
