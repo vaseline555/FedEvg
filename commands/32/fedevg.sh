@@ -2,7 +2,7 @@
 
 for s in 1 2 3
 do
-    for k in 10 50 100 
+    for k in 5 10 50 
     do
         echo "Start (K=$k; seed=$s)...!"
         {
@@ -12,7 +12,7 @@ do
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
@@ -23,7 +23,7 @@ do
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
@@ -34,7 +34,7 @@ do
             --split_type patho --mincls 2 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
@@ -45,7 +45,7 @@ do
             --split_type patho --mincls 5 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
@@ -56,7 +56,7 @@ do
             --split_type patho --mincls 5 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
@@ -67,7 +67,7 @@ do
             --split_type patho --mincls 5 --test_size 0.2 --spc 10 \
             --model_name ResNet10 --hidden_size 64 --resize 32 --penult_spectral_norm \
             --algorithm fedevg --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R $(($k * 5)) --K $k --C $(($k / 10)) --E 1 --B 32 --max_workers 4 \
+            --R $(($k * 10)) --K $k --C $((5 / $k)) --E 1 --B 64 --max_workers $((200 / $k)) \
             --alpha 1.0 --sigma 0.01 --ld_steps 10 \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.99 --lr_decay_step $k --criterion CrossEntropyLoss
             sleep 1
