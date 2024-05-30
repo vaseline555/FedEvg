@@ -21,28 +21,15 @@ class FedevgClient(FedavgClient):
         self.inputs_synth = None 
         self.targets_synth = None
         self.classifier = None
-
-    def init_synth(self):
-        self.inputs_synth  = torch.randn(
-            self.args.num_classes * self.args.spc, 
-            self.args.in_channels, 
-            self.args.resize, 
-            self.args.resize
-        ).clip(0., 1.)
-        self.targets_synth = torch.randint(
-            0, 
-            self.args.num_classes, 
-            (self.args.num_classes * self.args.spc,)
-        )
+        self.have_ckpt = False
 
     @torch.enable_grad()
     def energy_gradient(self, x, y):
         self.model.eval()
 
+        # calculate the gradient
         x = x.detach().clone()
         x.requires_grad_(True)
-        
-        # calculate the gradient
         x_energy = -self.model(x).gather(1, y.view(-1, 1))
         x_grad = torch.autograd.grad(
             outputs=x_energy.sum(),
@@ -113,22 +100,24 @@ class FedevgClient(FedavgClient):
                 x_ebm[accept_indices] = x_proposal[accept_indices]
                 energy_old[accept_indices] = energy_new[accept_indices]
                 grad[accept_indices] = grad_new[accept_indices]
-        
-        if self.args.cd_init == 'pcd':
-            self.inputs_synth[selected_indices] = x_ebm.detach().cpu()
         return x_ebm.clip(0., 1.).detach(), y_ebm
 
     @torch.enable_grad()
     def update(self):
-        mm = MetricManager(self.args.eval_metrics)
+        if self.have_ckpt:
+            self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
+        if self.args.penult_spectral_norm:
+            self.model.apply(add_sn)
+
         self.model.train()
         self.model.to(self.args.device)
-
+        
         optimizer = self.optim(
             list(param for param in self.model.parameters() if param.requires_grad), 
             **self._refine_optim_args(self.args)
         )
 
+        mm = MetricManager(self.args.eval_metrics)
         for e in range(self.args.E):
             for inputs_ce, targets_ce in self.train_loader:
                 inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
@@ -169,17 +158,21 @@ class FedevgClient(FedavgClient):
                 mm.aggregate(len(self.training_set), e + 1)
         else:
             self.model.to('cpu')
+            torch.save(self.model, f"{self.args.ckpt_path}/{self.id}.pt")
+            self.have_ckpt = True
         return mm.results
 
     @torch.no_grad()
     def evaluate(self):
         if self.args.train_only: # `args.test_size` == 0
             return {'loss': -1, 'metrics': {'none': -1}}
+        if self.have_ckpt:
+            self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
 
-        mm = MetricManager(self.args.eval_metrics)
         self.model.eval()
         self.model.to(self.args.device)
 
+        mm = MetricManager(self.args.eval_metrics)
         for inputs_ce, targets_ce in self.test_loader:
             inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
             inputs_pcd, targets_pcd = self.sample(inputs_ce.size(0), self.args.device)
@@ -211,10 +204,10 @@ class FedevgClient(FedavgClient):
 
     @torch.no_grad()
     def evaluate_classifier(self):
-        mm = MetricManager(self.args.eval_metrics)
         self.classifier.eval()
         self.classifier.to(self.args.device)
 
+        mm = MetricManager(self.args.eval_metrics)
         for inputs_ce, targets_ce in self.test_loader:
             inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
             
@@ -230,9 +223,4 @@ class FedevgClient(FedavgClient):
     def upload(self):
         energy_grad, energy = self.energy_gradient(self.inputs_synth.cpu(), self.targets_synth.cpu())
         return energy_grad, energy.sign().mul(-1).exp()
-    
-    def download(self, model):
-        self.model = copy.deepcopy(model)
-        if self.args.penult_spectral_norm:
-            self.model.apply(add_sn)
     

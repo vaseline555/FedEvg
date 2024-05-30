@@ -28,9 +28,7 @@ def sigmoid_beta_schedule(eta_start=10., eta_end=0., timesteps=100):
     return torch.sigmoid(etas) * (eta_end - eta_start) + eta_start
 
 def cosine_beta_schedule(eta_start=10., eta_end=0., timesteps=100, s=0.008):
-    """
-    cosine schedule as proposed in https://arxiv.org/abs/2102.09672
-    """
+    # cosine schedule as proposed in https://arxiv.org/abs/2102.09672
     steps = timesteps + 1
     x = torch.linspace(0, timesteps, steps)
     alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
@@ -186,37 +184,40 @@ class FedevgServer(FedavgServer):
 
     def _request(self, ids, eval, participated, save_raw):
         def __update_clients(client):
-            if client.model is None:
-                client.download(self.global_model)
-                client.init_synth()
-            
+            if not client.have_ckpt:
+                client.download(self.global_model) 
+                # only for the first time
+                # in practice, this should be separate 
+                # prapration of a local model in each client
+
             # sample from central buffer
-            #labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
-            #indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
-            #self.selected_indices = labels * self.args.spc + indices
+            labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
+            indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
+            self.selected_indices = labels * self.args.spc + indices
 
             # broadcast buffer
-            #client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
-            #client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
+            client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
+            client.targets_synth = self.targets_synth[self.selected_indices].clone()
 
+            # local update
             client.args.lr = self.curr_lr
             update_result = client.update()
             return {client.id: len(client.training_set)}, {client.id: update_result}
 
         def __evaluate_clients(client, participated):
-            if client.model is None:
-                assert not participated
+            if not client.have_ckpt:
                 client.download(self.global_model)
-                client.init_synth()
-            #client.inputs_synth = self.inputs_synth.clone()#[self.selected_indices].clone()
-            #client.targets_synth = self.targets_synth.clone()#[self.selected_indices].clone()
+
+            # broadcast buffer
+            if client.inputs_synth is None:
+                client.inputs_synth = self.inputs_synth[self.selected_indices].clone()
+                client.targets_synth = self.targets_synth[self.selected_indices].clone()
 
             eval_result = client.evaluate() 
-            if not participated:
+            if not participated: # for storage efficiency
                 client.model = None
                 client.inputs_synth = None
                 client.targets_synth = None
-
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request {"updates" if not eval else "losses"} to {"all" if ids is None else len(ids)} clients!')
@@ -288,14 +289,19 @@ class FedevgServer(FedavgServer):
         else:
             energies = torch.stack(e)
             grads = torch.stack(g)
+
             numerator = (energies[:, :, None, None] * grads).sum(0)
             denominator = energies.sum(0)[:, None, None]
-        agg_energy_grad_mixture = numerator.div(denominator)
-
+        
+        # calculate aggregated energy gradient
+        agg_energy_grad_mixture = numerator.div(denominator).clip(-1., 1.)
+        self.writer.add_scalar('L2 norm of Energy Gradient', agg_energy_grad_mixture.norm(2), self.round)
+        self.results['server_energy_grad_norm'] = agg_energy_grad_mixture.norm(2).item()
+        
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth_curr = self.inputs_synth.clone()#[self.selected_indices].clone()
-        inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
+        inputs_synth_curr = self.inputs_synth[self.selected_indices].clone()
+        inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round - 1] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
         return inputs_synth_new.clip(0., 1.)
     
@@ -330,16 +336,12 @@ class FedevgServer(FedavgServer):
             self.global_model.train()
 
             optimizer = torch.optim.Adam(self.global_model.parameters(), lr=0.001)
-            clf_losses, corrects = 0, 0
             for inputs, targets in aggregated_synthetic_dataloader:
                 inputs, targets = inputs.to(self.args.device), targets.to(self.args.device)
                 outputs = self.global_model(inputs)
 
                 # Calculate losses
                 clf_loss = torch.nn.__dict__[self.args.criterion]()(outputs, targets)
-                clf_losses += clf_loss.item()
-                corrects += outputs.argmax(1).eq(targets).sum().item()
-
                 optimizer.zero_grad()
                 clf_loss.backward()
                 optimizer.step()
@@ -348,24 +350,21 @@ class FedevgServer(FedavgServer):
                 mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
             else:
                 mm.aggregate(len(self.server_dataset))
-                clf_losses /= len(self.server_dataset)
-                corrects /= len(self.server_dataset)
-                logger.info(
-                    f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {clf_losses:.4f} Acc.: {corrects * 100:.2f}%'
-                )
-            self.global_model.eval()
-            self.global_model.to('cpu')
+                self.global_model.to('cpu')
 
-        self.writer.add_scalar('Server Training Loss', clf_losses, self.round)
-        self.writer.add_scalar('Server Training Acc1', corrects, self.round)
-        self.results['server_training_loss'] = clf_losses
-        self.results['server_training_acc1'] = corrects 
+        logger.info(
+            f"[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [UPDATE] [SERVER] Loss: {mm.results['loss']:.4f} Acc.: { mm.results['acc1']:.2f}%"
+        )
+        self.writer.add_scalar('Server Training Loss', mm.results['loss'], self.round // self.args.eval_every)
+        self.writer.add_scalar('Server Training Acc1', mm.results['acc1'], self.round // self.args.eval_every)
+        self.results['server_training_loss'] = mm.results['loss']
+        self.results['server_training_acc1'] = mm.results['acc1'] 
 
         # (global) evaluate server model
         mm = MetricManager(self.args.eval_metrics)
         self.global_model.to(self.args.device)
+        self.global_model.eval()
 
-        clf_losses, corrects = 0, 0
         for (synth, _), (inputs, targets) in zip(
             torch.utils.data.DataLoader(
                 torch.utils.data.TensorDataset(
@@ -386,8 +385,6 @@ class FedevgServer(FedavgServer):
 
             # Calculate losses
             clf_loss = torch.nn.__dict__[self.args.criterion]()(outputs, targets)
-            clf_losses += clf_loss.item()
-            corrects += outputs.argmax(1).eq(targets).sum().item()
 
             # collect for fid
             mm.track(
@@ -401,29 +398,27 @@ class FedevgServer(FedavgServer):
             # collect clf results
             mm.track(clf_loss.item(), outputs.detach().cpu(), targets.detach().cpu())
         else:
-            self.global_model.to('cpu')
             mm.aggregate(len(self.server_dataset))
-            clf_losses /= len(self.server_dataset)
-            corrects /= len(self.server_dataset)
+            self.global_model.to('cpu')
 
         # log result
         result = dict()
         server_log_string = f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] [EVALUATE] [SERVER] '
 
         ## metrics
-        server_log_string += f'| clf loss: {clf_losses:.4f} | accuracy: {corrects * 100:.2f}%'
+        server_log_string += f"| clf loss: {mm.results['loss']:.4f} | accuracy: {mm.results['acc1']:.2f}%"
         logger.info(server_log_string)
         
-        self.writer.add_scalar('Server Test Loss', clf_losses, self.round // self.args.eval_every)
-        self.writer.add_scalar('Server Test Acc1', corrects, self.round // self.args.eval_every)
+        self.writer.add_scalar('Server Test Loss', mm.results['loss'], self.round // self.args.eval_every)
+        self.writer.add_scalar('Server Test Acc1', mm.results['acc1'], self.round // self.args.eval_every)
 
         # log TensorBoard
         self.writer.add_scalar(f'Server Test Fid', mm.results['metrics']['fid'], self.round // self.args.eval_every)
         self.writer.flush()
         
         result['fid'] = mm.results['metrics']['fid']
-        result['loss'] = clf_losses
-        result['acc1'] = corrects
+        result['loss'] = mm.results['loss']
+        result['acc1'] = mm.results['acc1']
         self.results[self.round]['server_evaluated'] = result
 
         # (local) evaluate the server model
@@ -525,8 +520,7 @@ class FedevgServer(FedavgServer):
         #################
         # Server Update #
         #################
-        #self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
-        self.inputs_synth = self._aggregate(selected_ids, updated_sizes)
+        self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
 
@@ -537,7 +531,7 @@ class FedevgServer(FedavgServer):
             self.round
         )
 
-        # wrap into dataloader
+        """# wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
             batch_size=1,
@@ -578,6 +572,6 @@ class FedevgServer(FedavgServer):
         self.writer.add_scalar('Server Training Loss', clf_losses, self.round)
         self.writer.add_scalar('Server Training Acc1', corrects, self.round)
         self.results['server_training_loss'] = clf_losses
-        self.results['server_training_acc1'] = corrects
+        self.results['server_training_acc1'] = corrects"""
         return selected_ids
         
