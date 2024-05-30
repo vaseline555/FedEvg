@@ -215,7 +215,7 @@ def check_args(args):
             raise AssertionError(err)
     elif args.algorithm == 'fedcgan':
         assert 'gan' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
-    elif args.algorithm == 'fedcvae':
+    elif args.algorithm == 'fedcvaekd':
         assert 'vae' in args.model_name.lower(), f'{args.model_name} is NOT supported... please check!'
         assert args.criterion == 'MSELoss', f'{args.criterion} is NOT supported... please check!'
         assert args.R == 1, f'{args.algorithm} only supports one-shot setting... please check!'
@@ -223,7 +223,6 @@ def check_args(args):
     elif args.algorithm == 'fedcddpm':
         assert args.model_name.lower() == 'unetddpm', f'{args.model_name} is NOT supported... please check!'
         assert args.criterion == 'MSELoss', f'{args.criterion} is NOT supported... please check!'
-        assert args.test_size == 0, f'{args.algorithm} does not support local evaluation... please check!'
 
     # check model
     if args.use_pt_model:

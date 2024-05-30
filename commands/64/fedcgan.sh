@@ -11,8 +11,8 @@ do
             --dataset DermaMNIST \
             --split_type diri --cncntrtn 0.01 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
 
@@ -21,8 +21,8 @@ do
             --dataset OrganCMNIST \
             --split_type diri --cncntrtn 0.01 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
 
@@ -31,8 +31,8 @@ do
             --dataset BloodMNIST \
             --split_type diri --cncntrtn 0.01 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
 
@@ -41,8 +41,8 @@ do
             --dataset DermaMNIST \
             --split_type diri --cncntrtn 1.00 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
 
@@ -51,8 +51,8 @@ do
             --dataset OrganCMNIST \
             --split_type diri --cncntrtn 1.00 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss &
             sleep 1
 
@@ -61,8 +61,8 @@ do
             --dataset BloodMNIST \
             --split_type diri --cncntrtn 1.00 --test_size 0.2 --spc 50 \
             --model_name ACGAN --hidden_size 64 --resize 64 --init_type normal --init_gain 0.02 \
-            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every $k --eval_metrics acc1 fid \
-            --R 100 --K $k --C $((10 / $k)) --E $((100 / $k)) --B 64 --max_workers $((100 / $k)) \
+            --algorithm fedcgan --eval_fraction 1 --eval_type both --eval_every 10 --eval_metrics acc1 fid \
+            --R $((10 * $k)) --K $k --C $((10 / $k)) --E 1 --B 64 --max_workers $((100 / $k)) \
             --optimizer Adam --lr 0.001 --weight_decay 1e-4 --lr_decay 0.95 --lr_decay_step $k --criterion CrossEntropyLoss
             sleep 1
         } &&

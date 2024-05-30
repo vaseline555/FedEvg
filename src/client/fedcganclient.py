@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 
-
 class FedcganClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedcganClient, self).__init__(**kwargs)
@@ -131,7 +130,7 @@ class FedcganClient(FedavgClient):
             ], dim=1)
 
             # D
-            disc_fake, disc_real, clf_fake, clf_real = self.model(noise, inputs, for_D=True)
+            disc_fake, disc_real, _, clf_real = self.model(noise, inputs, for_D=True)
             
             ## D on real
             D_loss_real = self.gan_criterion(disc_real, torch.ones_like(disc_real))
@@ -139,14 +138,12 @@ class FedcganClient(FedavgClient):
 
             ## D on fake
             D_loss_fake = self.gan_criterion(disc_fake, torch.zeros_like(disc_fake))
-            clf_loss_fake = self.criterion(clf_fake, torch.ones_like(targets).mul(fake_label).long())
 
             # G
-            disc_fake, clf_fake, generated = self.model(noise, inputs, for_D=False)
+            disc_fake, _, generated = self.model(noise, inputs, for_D=False)
 
             ## D on fake
             G_loss_fake = self.gan_criterion(disc_fake, torch.ones_like(disc_fake))
-            clf_loss_fake = self.criterion(clf_fake, targets)
 
             # log
             mm.track(

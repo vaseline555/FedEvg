@@ -8,13 +8,7 @@ from src import MetricManager
 logger = logging.getLogger(__name__)
 
 
-
-def add_sn(m):    
-    if isinstance(m, torch.nn.Linear):
-        return torch.nn.utils.spectral_norm(m)
-    else:
-        return m
-
+        
 class FedevgClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedevgClient, self).__init__(**kwargs)
@@ -104,10 +98,10 @@ class FedevgClient(FedavgClient):
 
     @torch.enable_grad()
     def update(self):
-        if self.have_ckpt:
+        if self.have_ckpt and (self.model is None):
             self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
-        if self.args.penult_spectral_norm:
-            self.model.apply(add_sn)
+            if self.args.penult_spectral_norm:
+                self.model.classifier.apply(torch.nn.utils.parametrizations.spectral_norm)
 
         self.model.train()
         self.model.to(self.args.device)
@@ -158,6 +152,7 @@ class FedevgClient(FedavgClient):
                 mm.aggregate(len(self.training_set), e + 1)
         else:
             self.model.to('cpu')
+            torch.nn.utils.parametrize.remove_parametrizations(self.model.classifier, 'weight')
             torch.save(self.model, f"{self.args.ckpt_path}/{self.id}.pt")
             self.have_ckpt = True
         return mm.results
@@ -166,7 +161,7 @@ class FedevgClient(FedavgClient):
     def evaluate(self):
         if self.args.train_only: # `args.test_size` == 0
             return {'loss': -1, 'metrics': {'none': -1}}
-        if self.have_ckpt:
+        if self.have_ckpt and (self.model is None):
             self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
 
         self.model.eval()
@@ -223,4 +218,4 @@ class FedevgClient(FedavgClient):
     def upload(self):
         energy_grad, energy = self.energy_gradient(self.inputs_synth.cpu(), self.targets_synth.cpu())
         return energy_grad, energy.sign().mul(-1).exp()
-    
+        

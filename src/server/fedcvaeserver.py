@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 
 
 
-class FedcganServer(FedavgServer):
+class FedcvaeServer(FedavgServer):
     def __init__(self, **kwargs):
-        super(FedcganServer, self).__init__(**kwargs)
+        super(FedcvaeServer, self).__init__(**kwargs)
         classifier = ResNet10(self.args.resize, self.args.in_channels, self.args.hidden_size, self.args.num_classes)
         self.classifier = self._init_model(classifier)
         self.results['model_parameter_counts'] = sum(p.numel() for p in self.global_model.parameters()) 
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
-        losses, losses_D, losses_G, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
+        losses, losses_kl, losses_recon, metrics, num_samples = list(), list(), list(), defaultdict(list), list()
         generated = list()
 
         for identifier, result in results.items():
@@ -36,14 +36,14 @@ class FedcganServer(FedavgServer):
                 losses.append(loss)
                 
                 # loss G
-                loss_G = result['loss_G']
-                client_log_string += f'| loss (G): {loss_G:.4f} '
-                losses_G.append(loss_G)
+                loss_recon = result['loss_recon']
+                client_log_string += f'| loss (recon.): {loss_recon:.4f} '
+                losses_recon.append(loss_recon)
 
                 # loss D
-                loss_D = result['loss_D']
-                client_log_string += f'| loss (D): {loss_D:.4f} '
-                losses_D.append(loss_D)
+                loss_kl = result['loss_kl']
+                client_log_string += f'| loss (kl div.): {loss_kl:.4f} '
+                losses_kl.append(loss_kl)
 
                 # collect generated samples
                 gen_img = result['generated'].unsqueeze(0)
@@ -60,14 +60,14 @@ class FedcganServer(FedavgServer):
                 losses.append(loss)
                 
                 # loss G
-                loss_G = result[self.args.E]['loss_G']
-                client_log_string += f'| loss (G): {loss_G:.4f} '
-                losses_G.append(loss_G)
+                loss_recon = result[self.args.E]['loss_recon']
+                client_log_string += f'| loss (recon.): {loss_recon:.4f} '
+                losses_recon.append(loss_recon)
 
                 # loss D
-                loss_D = result[self.args.E]['loss_D']
-                client_log_string += f'| loss (D): {loss_D:.4f} '
-                losses_D.append(loss_D)
+                loss_kl = result[self.args.E]['loss_kl']
+                client_log_string += f'| loss (kl div.): {loss_kl:.4f} '
+                losses_kl.append(loss_kl)
 
                 # collect generated samples
                 gen_img = result[self.args.E]['generated'].unsqueeze(0)
@@ -93,17 +93,17 @@ class FedcganServer(FedavgServer):
         losses_array = np.array(losses).astype(float)
         weighted = losses_array.dot(num_samples) / sum(num_samples); std = losses_array.std()
 
-        losses_G_array = np.array(losses_G).astype(float)
-        weighted_G = losses_G_array.dot(num_samples) / sum(num_samples); std_G = losses_G_array.std()
+        losses_recon_array = np.array(losses_recon).astype(float)
+        weighted_recon = losses_recon_array.dot(num_samples) / sum(num_samples); std_recon = losses_recon_array.std()
 
-        losses_D_array = np.array(losses_D).astype(float)
-        weighted_D = losses_D_array.dot(num_samples) / sum(num_samples); std_D = losses_D_array.std()
+        losses_kl_array = np.array(losses_kl).astype(float)
+        weighted_kl = losses_kl_array.dot(num_samples) / sum(num_samples); std_kl = losses_kl_array.std()
 
-        total_log_string += f'\n    - Loss: Avg. ({weighted:.4f}) Std. ({std:.4f}) | Loss (G): Avg. ({weighted_G:.4f}) Std. ({std_G:.4f}) | Loss (D): Avg. ({weighted_D:.4f}) Std. ({std_D:.4f})'
+        total_log_string += f'\n    - Loss: Avg. ({weighted:.4f}) Std. ({std:.4f}) | Loss (recon.): Avg. ({weighted_recon:.4f}) Std. ({std_recon:.4f}) | Loss (kl div.): Avg. ({weighted_kl:.4f}) Std. ({std_kl:.4f})'
         result_dict['loss'] = {
             'avg': weighted.astype(float), 'std': std.astype(float),
-            'avg_g': weighted_G.astype(float), 'std_g': std_G.astype(float),
-            'avg_d': weighted_D.astype(float), 'std_d': std_D.astype(float)
+            'avg_recon': weighted_recon.astype(float), 'std_recon': std_recon.astype(float),
+            'avg_d': weighted_kl.astype(float), 'std_kl': std_kl.astype(float)
         }
 
         if save_raw:
@@ -113,8 +113,8 @@ class FedcganServer(FedavgServer):
             f'Local {"Test" if eval else "Training"} Loss' + eval * f' ({"In" if participated else "Out"})',
             {
                 'Avg.': weighted, 'Std.': std,
-                'Avg. (G)': weighted_G, 'Std. (G)': std_G,
-                'Avg. (D)': weighted_D, 'Std. (D)': std_D
+                'Avg. (recon.)': weighted_recon, 'Std. (recon.)': std_recon,
+                'Avg. (kl div.)': weighted_kl, 'Std. (kl div.)': std_kl
             },
             self.round
         )
@@ -168,14 +168,12 @@ class FedcganServer(FedavgServer):
 
         # generate server-side synthetic samples
         targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1).to(self.args.device)
-        noise = torch.rand(self.args.num_classes * self.args.spc, self.args.hidden_size * 2, 1, 1).sub(0.5).div(0.5).to(self.args.device)
+        noise = torch.randn(self.args.num_classes * self.args.spc, self.args.hidden_size * 2).to(self.args.device)
         noise = torch.cat([
             noise, 
-            torch.nn.functional.one_hot(
-                targets_synth, self.args.num_classes
-            ).view(-1, self.args.num_classes, 1, 1).to(self.args.device)
+            torch.nn.functional.one_hot(targets_synth, self.args.num_classes).to(self.args.device)
         ], dim=1)
-        inputs_synth = self.global_model.generator(noise)
+        inputs_synth = self.global_model.decoder(noise)
         self.global_model.to('cpu')
         
         # log generated images    

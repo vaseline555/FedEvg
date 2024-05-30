@@ -59,9 +59,9 @@ class Decoder(torch.nn.Module):
 class CVAE(torch.nn.Module):
     def __init__(self, resize, in_channels, hidden_size, num_classes):
         super(CVAE, self).__init__()
-        self.latent_dim = 100
-        self.encoder = Encoder(resize, in_channels, hidden_size, latent_dim=100)
-        self.decoder = Decoder(resize, in_channels, hidden_size, num_classes, latent_dim=100)
+        self.latent_dim = hidden_size * 2
+        self.encoder = Encoder(resize, in_channels, hidden_size, latent_dim=self.latent_dim)
+        self.decoder = Decoder(resize, in_channels, hidden_size, num_classes, latent_dim=self.latent_dim)
 
     def _reparametrize(self, mu, std):
         return mu + std * torch.randn_like(mu)

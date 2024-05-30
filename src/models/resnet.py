@@ -24,14 +24,11 @@ class ResNet(torch.nn.Module):
             self._make_layers(block, hidden_size * 2, config[1], stride=2, act=torch.nn.SiLU() if penult_spectral_norm else torch.nn.ReLU()),
             self._make_layers(block, hidden_size * 4, config[2], stride=2, act=torch.nn.SiLU() if penult_spectral_norm else torch.nn.ReLU()),
             self._make_layers(block, hidden_size * 8, config[3], stride=2, act=torch.nn.SiLU() if penult_spectral_norm else torch.nn.ReLU()),
-        ) 
-        self.classifier = torch.nn.Sequential(
-            #torch.nn.AdaptiveAvgPool2d((4, 4)),
             torch.nn.GroupNorm(hidden_size, hidden_size * 8),
             torch.nn.SiLU() if penult_spectral_norm else torch.nn.ReLU(),
-            torch.nn.Flatten(),
-            torch.nn.Linear((resize // 8)**2 * (hidden_size * 8), num_classes, bias=True)
-        )
+            torch.nn.Flatten()
+        ) 
+        self.classifier = torch.nn.Linear((resize // 8)**2 * (hidden_size * 8), num_classes, bias=True)
 
     def forward(self, x):
         x = self.features(x)
