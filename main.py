@@ -203,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument('--server_beta_last', help='server SGLD step size in the final round', type=float, choices=[Range(0., float('inf'))], default=1.)
     parser.add_argument('--spc', help='samples per class of the buffer', type=int, choices=[Range(1, float('inf'))], default=50)
     parser.add_argument('--bpr', help='buffer size per round', type=int, choices=[Range(1, float('inf'))], default=10)
+    parser.add_argument('--server_sync', help='buffer size per round', type=int, default=5)
 
 
     # parse arguments

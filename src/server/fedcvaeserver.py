@@ -286,6 +286,7 @@ class FedcvaeServer(FedavgServer):
         # log TensorBoard
         self.writer.add_scalar('Server Test Loss', mm.results['loss'], self.round // self.args.eval_every)
         self.writer.add_scalar('Server Test Acc1', mm.results['acc1'], self.round // self.args.eval_every)
+        self.writer.add_scalar(f'Server Test Fid', mm.results['metrics']['fid'], self.round // self.args.eval_every)
         self.results[self.round]['server_evaluated'] = result
 
         # local evaluate classifier
