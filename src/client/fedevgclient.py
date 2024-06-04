@@ -35,6 +35,7 @@ class FedevgClient(FedavgClient):
         self.synth_dataset = None
         self.classifier = None
         self.have_ckpt = False
+        self.label_unique = None
 
     @torch.enable_grad()
     def energy_gradient(self, x, y):
@@ -121,6 +122,8 @@ class FedevgClient(FedavgClient):
         for e in range(self.args.E):
             synth_dataset = InfiniteDataLoader(self.synth_dataset, shuffle=True, drop_last=True)
             for inputs, targets in self.train_loader:
+                if self.label_unique is None:
+                    self.label_unique = torch.unique(targets)
                 inputs_ce, targets_ce = inputs.to(self.args.device), targets.to(self.args.device)
                 inputs_synth, targets_synth = next(islice(synth_dataset, self.args.B))
                 inputs_synth, targets_synth = inputs_synth.to(self.args.device), targets_synth.to(self.args.device)

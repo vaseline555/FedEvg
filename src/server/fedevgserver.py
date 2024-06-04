@@ -46,7 +46,7 @@ class FedevgServer(FedavgServer):
         self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
 
         # central SGLD configuration
-        self.server_beta_schedule = cosine_beta_schedule(self.args.server_beta, self.args.server_beta_last, self.args.R)
+        self.server_beta_schedule = sigmoid_beta_schedule(self.args.server_beta, self.args.server_beta_last, self.args.R)
         self.selected_indices = None
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
@@ -186,9 +186,15 @@ class FedevgServer(FedavgServer):
         def __update_clients(client):
             if not client.have_ckpt:
                 client.download(self.global_model) 
+            labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
+            indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
+            self.selected_indices = labels * self.args.spc + indices
 
             # broadcast buffer
-            client.synth_dataset = torch.utils.data.TensorDataset(self.inputs_synth.clone(), self.targets_synth.clone())
+            client.synth_dataset = torch.utils.data.TensorDataset(
+                self.inputs_synth[self.selected_indices].clone(), 
+                self.targets_synth[self.selected_indices].clone()
+            )
 
             # local update
             client.args.lr = self.curr_lr
@@ -200,7 +206,10 @@ class FedevgServer(FedavgServer):
                 client.download(self.global_model)
 
             if not participated:
-                client.synth_dataset = torch.utils.data.TensorDataset(self.inputs_synth.clone(), self.targets_synth.clone())
+                client.synth_dataset = torch.utils.data.TensorDataset(
+                    self.inputs_synth[self.selected_indices].clone(), 
+                    self.targets_synth[self.selected_indices].clone()
+                )
 
             eval_result = client.evaluate() 
             if not participated: # for storage efficiency
@@ -269,8 +278,17 @@ class FedevgServer(FedavgServer):
         for identifier in ids:
             energy_grad, exp_energy_signed = self.clients[identifier].upload()
             self.clients[identifier].model = None
+            from sklearn.manifold import TSNE
+            import matplotlib.pyplot as plt
+            transformed = TSNE().fit_transform(energy_grad.view(energy_grad.size(0), -1))
+            label = self.clients[identifier].synth_dataset.tensors[-1]
+            plt.figure(figsize=(10, 8))
+            sc = plt.scatter(transformed[:,0], transformed[:,1], c=label.numpy().tolist())
+            handles, _ = sc.legend_elements(prop='colors')
+            plt.legend(handles, label.numpy())
+            plt.savefig(f'round{self.round}_client{identifier}_oracle ({",".join(str(e) for e in self.clients[identifier].label_unique.tolist())}).png')
             self.clients[identifier].synth_dataset = None
-
+            
             e.append(exp_energy_signed.mul(coefficients[identifier]))
             g.append(energy_grad)
         else:
@@ -287,7 +305,7 @@ class FedevgServer(FedavgServer):
         
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth_curr = self.inputs_synth.clone()#[self.selected_indices].clone()
+        inputs_synth_curr = self.inputs_synth[self.selected_indices].clone()
         inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round - 1] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
         return inputs_synth_new.clip(0., 1.)
@@ -508,7 +526,7 @@ class FedevgServer(FedavgServer):
         #################
         # Server Update #
         #################
-        self.inputs_synth = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
+        self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
 
