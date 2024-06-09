@@ -11,31 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 
-class InfiniteDataLoader(torch.utils.data.DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Initialize an iterator over the dataset.
-        self.dataset_iterator = super().__iter__()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        try:
-            batch = next(self.dataset_iterator)
-        except StopIteration:
-            # Dataset exhausted, use a new fresh iterator.
-            self.dataset_iterator = super().__iter__()
-            batch = next(self.dataset_iterator)
-        return batch
-
 class FedevgClient(FedavgClient):
     def __init__(self, **kwargs):
         super(FedevgClient, self).__init__(**kwargs)
-        self.synth_dataset = None
+        self.inputs_synth, self.targets_synth = None, None
+        self.init_synth = None
         self.classifier = None
         self.have_ckpt = False
-        self.label_unique = None
 
     @torch.enable_grad()
     def energy_gradient(self, x, y):
@@ -51,25 +33,38 @@ class FedevgClient(FedavgClient):
             only_inputs=True
         )[0]
         self.model.train()
-        return x_grad.detach(), x_energy.detach()
+        if self.args.ld_threshold is None:
+            return x_grad.detach(), x_energy.detach()
+        else:
+            return x_grad.detach().clip(-self.args.ld_threshold, self.args.ld_threshold), x_energy.detach()
 
     def langevine_dynamics_step(self, x_old, y):
         energy_grad, _ = self.energy_gradient(x_old, y)
-        if self.args.ld_threshold is not None:
-            energy_grad = torch.clip(energy_grad, -self.args.ld_threshold, self.args.ld_threshold)
         epsilon = torch.randn_like(energy_grad)
         x_new = x_old - self.args.alpha * energy_grad + epsilon * self.args.sigma
         return x_new
 
-    def sample(self, inputs, targets):
+    def sample(self, num_samples, device):
         # initial proposal
         if self.args.cd_init == 'noise':
-            x_ebm, y_ebm = torch.randn_like(inputs), targets.clone()
+            x_ebm = torch.randn(
+                num_samples, 
+                self.args.in_channels, 
+                self.args.resize, 
+                self.args.resize
+            ).clip(0., 1.).to(device)
+            y_ebm = torch.randint(0, self.args.num_classes, (num_samples,)).to(device)
         elif self.args.cd_init == 'cd':
             x_ebm, y_ebm = next(iter(self.train_loader))
-            x_ebm, y_ebm = x_ebm.to(self.args.device), y_ebm.to(self.args.device)
+            if len(x_ebm) > num_samples:
+                indices = torch.randperm(len(x_ebm))[:num_samples]
+                x_ebm, y_ebm = x_ebm[indices], y_ebm[indices]
+
+            x_ebm, y_ebm = x_ebm.to(device), y_ebm.to(device)
         elif self.args.cd_init == 'pcd':
-            x_ebm, y_ebm = inputs.clone(), targets.clone()
+            selected_indices = torch.randperm(len(self.inputs_synth))[:num_samples]
+            x_ebm = self.inputs_synth[selected_indices].to(device)
+            y_ebm = self.targets_synth[selected_indices].to(device)
 
         # MCMC sampling
         if self.args.mcmc == 'ula':
@@ -99,14 +94,15 @@ class FedevgClient(FedavgClient):
                 x_ebm[accept_indices] = x_proposal[accept_indices]
                 energy_old[accept_indices] = energy_new[accept_indices]
                 grad[accept_indices] = grad_new[accept_indices]
-        return x_ebm.clip(0., 1.).detach(), y_ebm
+
+        # update persistent buffer
+        if self.args.cd_init == 'pcd':
+            self.inputs_synth[selected_indices] = x_ebm.clip(0., 1.).cpu()
+        return x_ebm.clip(0., 1.), y_ebm, selected_indices
 
     @torch.enable_grad()
-    def update(self, reinit=False):
-        if self.have_ckpt and (self.model is None):
-            self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
-        if reinit:
-            init_weights(self.model, self.args.init_type, self.args.init_gain)
+    def update(self):
+        init_weights(self.model, self.args.init_type, self.args.init_gain)
         if self.args.penult_spectral_norm:
             self.model.classifier.apply(torch.nn.utils.parametrizations.spectral_norm)
 
@@ -120,24 +116,21 @@ class FedevgClient(FedavgClient):
 
         mm = MetricManager(self.args.eval_metrics)
         for e in range(self.args.E):
-            synth_dataset = InfiniteDataLoader(self.synth_dataset, shuffle=True, drop_last=True)
-            for inputs, targets in self.train_loader:
-                if self.label_unique is None:
-                    self.label_unique = torch.unique(targets)
-                inputs_ce, targets_ce = inputs.to(self.args.device), targets.to(self.args.device)
-                inputs_synth, targets_synth = next(islice(synth_dataset, self.args.B))
-                inputs_synth, targets_synth = inputs_synth.to(self.args.device), targets_synth.to(self.args.device)
-                inputs_pcd, targets_pcd = self.sample(inputs_synth, targets_synth)
+            for inputs_ce, targets_ce in self.train_loader:
+                inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
+                inputs_pcd, targets_pcd, selected_indices = self.sample(inputs_ce.size(0), self.args.device)
 
                 outputs_ce = self.model(inputs_ce)
-                outputs_synth = self.model(inputs_synth)
-
-                ce_loss = self.criterion(outputs_ce, targets_ce) + self.criterion(outputs_synth, targets_synth).mul(self.args.ce_lambda)
                 outputs_pcd = self.model(inputs_pcd)
+                ce_loss = self.criterion(outputs_ce, targets_ce) + self.criterion(
+                    self.model(self.init_synth[selected_indices].to(self.args.device)), 
+                    targets_pcd
+                ).mul(self.args.ce_lambda)
+    
                 e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1)).mean()
                 e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1)).mean()
-                pcd_loss = (e_pos - e_neg)
-
+                pcd_loss = e_pos - e_neg
+                
                 loss = pcd_loss + ce_loss
 
                 optimizer.zero_grad()
@@ -155,7 +148,7 @@ class FedevgClient(FedavgClient):
                         ce_loss.detach().cpu().item(), 
                         pcd_loss.detach().cpu().item()
                     ], 
-                    pred=inputs_pcd.detach().cpu().clip(0., 1.),
+                    pred=inputs_pcd.detach().cpu(),
                     true=inputs_ce.detach().cpu(), 
                     suffix=['ce', 'pcd'],
                     calc_fid=False
@@ -165,38 +158,34 @@ class FedevgClient(FedavgClient):
                 mm.aggregate(len(self.training_set), e + 1)
         else:
             self.model.to('cpu')
-            if self.args.penult_spectral_norm:
-                torch.nn.utils.parametrize.remove_parametrizations(self.model.classifier, 'weight')
-            torch.save(self.model, f"{self.args.ckpt_path}/{self.id}.pt")
-            self.have_ckpt = True
         return mm.results
 
     @torch.no_grad()
     def evaluate(self):
         if self.args.train_only: # `args.test_size` == 0
             return {'loss': -1, 'metrics': {'none': -1}}
-        if self.have_ckpt and (self.model is None):
-            self.model = torch.load(f"{self.args.ckpt_path}/{self.id}.pt")
-        if self.args.penult_spectral_norm:
+
+        if (self.args.penult_spectral_norm) \
+            and (not torch.nn.utils.parametrize.is_parametrized(self.model.classifier)):
             self.model.classifier.apply(torch.nn.utils.parametrizations.spectral_norm)
         self.model.eval()
         self.model.to(self.args.device)
 
         mm = MetricManager(self.args.eval_metrics)
-        synth_dataset = InfiniteDataLoader(self.synth_dataset, shuffle=True, drop_last=True)
         for inputs_ce, targets_ce in self.test_loader:
             inputs_ce, targets_ce = inputs_ce.to(self.args.device), targets_ce.to(self.args.device)
-            inputs_synth, targets_synth = next(islice(synth_dataset, self.args.B))
-            inputs_synth, targets_synth = inputs_synth.to(self.args.device), targets_synth.to(self.args.device)
-            inputs_pcd, targets_pcd = self.sample(inputs_synth, targets_synth)
+            inputs_pcd, targets_pcd, selected_indices = self.sample(inputs_ce.size(0), self.args.device)
 
             outputs_ce = self.model(inputs_ce)
-            outputs_pcd = self.model(inputs_pcd.detach())
+            outputs_pcd = self.model(inputs_pcd)
             
             e_pos = -outputs_ce.gather(1, targets_ce.view(-1, 1)).mean()
             e_neg = -outputs_pcd.gather(1, targets_pcd.view(-1, 1)).mean()
             pcd_loss = (e_pos - e_neg)
-            ce_loss = self.criterion(outputs_ce, targets_ce)
+            ce_loss = self.criterion(outputs_ce, targets_ce) + self.criterion(
+                self.model(self.init_synth[selected_indices].to(self.args.device)), 
+                targets_pcd
+            ).mul(self.args.ce_lambda)
 
             # collect results
             mm.track(
@@ -204,7 +193,7 @@ class FedevgClient(FedavgClient):
                     ce_loss.detach().cpu().item(), 
                     pcd_loss.detach().cpu().item()
                 ], 
-                pred=inputs_pcd.detach().cpu().clip(0., 1.),
+                pred=inputs_pcd.detach().cpu(),
                 true=inputs_ce.detach().cpu(), 
                 suffix=['ce', 'pcd'],
                 calc_fid=False
@@ -234,7 +223,6 @@ class FedevgClient(FedavgClient):
         return mm.results
     
     def upload(self):
-        inputs_synth, targets_synth = self.synth_dataset.tensors
-        energy_grad, energy = self.energy_gradient(inputs_synth.cpu(), targets_synth.cpu())
+        energy_grad, energy = self.energy_gradient(self.init_synth.cpu(), self.targets_synth.cpu())
         return energy_grad, energy.sign().mul(-1).exp()
         

@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 from collections import ChainMap, defaultdict
 
-from src import MetricManager, TqdmToLogger
+from src import MetricManager, TqdmToLogger, init_weights
 from src.models import ResNet10
 from .fedavgserver import FedavgServer
 
@@ -197,6 +197,7 @@ class FedcvaeServer(FedavgServer):
         # 2. Train Classifier #
         #######################
         # train server-side classifier
+        init_weights(self.classifier, self.args.init_type, self.args.init_gain)
         self.classifier.to(self.args.device)
         self.classifier.train()
 

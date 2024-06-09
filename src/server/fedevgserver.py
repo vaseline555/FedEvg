@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 from collections import ChainMap, defaultdict
 
-from src import MetricManager, TqdmToLogger
+from src import MetricManager, TqdmToLogger, init_weights
 from .fedavgserver import FedavgServer
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class FedevgServer(FedavgServer):
         self.targets_synth = torch.arange(self.args.num_classes).view(-1, 1).repeat(1, self.args.spc).view(-1)
 
         # central SGLD configuration
-        self.server_beta_schedule = sigmoid_beta_schedule(self.args.server_beta, self.args.server_beta_last, self.args.R)
+        self.server_beta_schedule = cosine_beta_schedule(self.args.server_beta, self.args.server_beta_last, self.args.R)
         self.selected_indices = None
 
     def _log_results(self, resulting_sizes, results, eval, participated, save_raw):
@@ -184,37 +184,34 @@ class FedevgServer(FedavgServer):
 
     def _request(self, ids, eval, participated, save_raw):
         def __update_clients(client):
-            if not client.have_ckpt:
-                client.download(self.global_model) 
-            labels = torch.randint(0, self.args.num_classes, (self.args.num_classes * self.args.bpr,))
-            indices = torch.randint(0, self.args.spc, (self.args.num_classes * self.args.bpr,))
-            self.selected_indices = labels * self.args.spc + indices
+            if client.model is None:
+                client.download(self.global_model)
 
-            # broadcast buffer
-            client.synth_dataset = torch.utils.data.TensorDataset(
-                self.inputs_synth[self.selected_indices].clone(), 
-                self.targets_synth[self.selected_indices].clone()
-            )
+            # broadcast selected synthetic samples
+            client.inputs_synth = self.inputs_synth.clone()
+            client.targets_synth = self.targets_synth.clone()
+            client.init_synth = client.inputs_synth.clone()
 
             # local update
             client.args.lr = self.curr_lr
-            update_result = client.update(reinit=self.round % self.args.server_sync == 0)
+            update_result = client.update()
             return {client.id: len(client.training_set)}, {client.id: update_result}
 
         def __evaluate_clients(client, participated):
-            if not client.have_ckpt:
+            if client.model is None:
                 client.download(self.global_model)
 
             if not participated:
-                client.synth_dataset = torch.utils.data.TensorDataset(
-                    self.inputs_synth[self.selected_indices].clone(), 
-                    self.targets_synth[self.selected_indices].clone()
-                )
+                client.inputs_synth = self.inputs_synth.clone() 
+                client.targets_synth = self.targets_synth.clone()
+                client.init_synth = client.inputs_synth.clone()
 
             eval_result = client.evaluate() 
             if not participated: # for storage efficiency
                 client.model = None
-                client.synth_dataset = None
+                client.inputs_synth = None
+                client.targets_synth = None
+                client.init_synth = None
             return {client.id: len(client.test_set)}, {client.id: eval_result}
 
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] Request {"updates" if not eval else "losses"} to {"all" if ids is None else len(ids)} clients!')
@@ -277,18 +274,13 @@ class FedevgServer(FedavgServer):
         e, g = [], []
         for identifier in ids:
             energy_grad, exp_energy_signed = self.clients[identifier].upload()
+
+            # storage efficiency
             self.clients[identifier].model = None
-            from sklearn.manifold import TSNE
-            import matplotlib.pyplot as plt
-            transformed = TSNE().fit_transform(energy_grad.view(energy_grad.size(0), -1))
-            label = self.clients[identifier].synth_dataset.tensors[-1]
-            plt.figure(figsize=(10, 8))
-            sc = plt.scatter(transformed[:,0], transformed[:,1], c=label.numpy().tolist())
-            handles, _ = sc.legend_elements(prop='colors')
-            plt.legend(handles, label.numpy())
-            plt.savefig(f'round{self.round}_client{identifier}_oracle ({",".join(str(e) for e in self.clients[identifier].label_unique.tolist())}).png')
-            self.clients[identifier].synth_dataset = None
-            
+            self.clients[identifier].inputs_synth = None
+            self.clients[identifier].targets_synth = None
+            self.clients[identifier].init_synth = None
+
             e.append(exp_energy_signed.mul(coefficients[identifier]))
             g.append(energy_grad)
         else:
@@ -305,7 +297,7 @@ class FedevgServer(FedavgServer):
         
         # update server-side synthetic data
         sigma = 0.0001
-        inputs_synth_curr = self.inputs_synth[self.selected_indices].clone()
+        inputs_synth_curr = self.inputs_synth.clone() 
         inputs_synth_new = inputs_synth_curr - self.server_beta_schedule[self.round - 1] * agg_energy_grad_mixture + sigma * torch.randn_like(agg_energy_grad_mixture)
         logger.info(f'[{self.args.algorithm.upper()}] [{self.args.dataset.upper()}] [Round: {str(self.round).zfill(4)}] ...successfully aggregated into a new gloal model!')
         return inputs_synth_new.clip(0., 1.)
@@ -326,7 +318,6 @@ class FedevgServer(FedavgServer):
             targets=self.targets_synth.detach().cpu().numpy()
         )
 
-        # below is done in `update`
         # wrap into dataloader
         aggregated_synthetic_dataloader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(self.inputs_synth, self.targets_synth),
@@ -336,6 +327,7 @@ class FedevgServer(FedavgServer):
         
         # train server-side model using synthetic data
         # for measuring generalization performance
+        init_weights(self.global_model, self.args.init_type, self.args.init_gain)
         with torch.enable_grad():
             mm = MetricManager(self.args.eval_metrics)
             self.global_model.to(self.args.device)
@@ -526,7 +518,7 @@ class FedevgServer(FedavgServer):
         #################
         # Server Update #
         #################
-        self.inputs_synth[self.selected_indices] = self._aggregate(selected_ids, updated_sizes) # aggregate local updates
+        self.inputs_synth = self._aggregate(selected_ids, updated_sizes)
         if self.round % self.args.lr_decay_step == 0: # update learning rate
             self.curr_lr *= self.args.lr_decay
 

@@ -67,7 +67,6 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', help='path to save & read raw data', type=str, default='./data')
     parser.add_argument('--log_path', help='path to save logs', type=str, default='./log')
     parser.add_argument('--result_path', help='path to save results', type=str, default='./result')
-    parser.add_argument('--ckpt_path', help='path to save model checkpoints', type=str, default='./ckpt')
     parser.add_argument('--use_tb', help='use TensorBoard for log tracking (if passed)', action='store_true')
     parser.add_argument('--tb_port', help='TensorBoard port number (valid only if `use_tb`)', type=int, default=6006)
     parser.add_argument('--tb_host', help='TensorBoard host address (valid only if `use_tb`)', type=str, default='0.0.0.0')
@@ -202,9 +201,6 @@ if __name__ == "__main__":
     parser.add_argument('--server_beta', help='server SGLD step size', type=float, choices=[Range(0., float('inf'))], default=100.)
     parser.add_argument('--server_beta_last', help='server SGLD step size in the final round', type=float, choices=[Range(0., float('inf'))], default=1.)
     parser.add_argument('--spc', help='samples per class of the buffer', type=int, choices=[Range(1, float('inf'))], default=50)
-    parser.add_argument('--bpr', help='buffer size per round', type=int, choices=[Range(1, float('inf'))], default=10)
-    parser.add_argument('--server_sync', help='buffer size per round', type=int, default=5)
-
 
     # parse arguments
     args = parser.parse_args()
@@ -220,11 +216,6 @@ if __name__ == "__main__":
     if not os.path.exists(args.log_path):
         os.makedirs(args.log_path)
     
-    # make path for saving models
-    args.ckpt_path = os.path.join(args.ckpt_path, f'{args.exp_name}')
-    if not os.path.exists(args.ckpt_path):
-        os.makedirs(args.ckpt_path)
-
     # initialize logger
     set_logger(f'{args.log_path}/{args.exp_name}_{curr_time}.log', args)
     
